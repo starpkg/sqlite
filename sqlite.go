@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1set/starlet"
+	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
@@ -20,13 +21,13 @@ const (
 	ModuleName = "sqlite"
 
 	// Default configuration values
-	defaultDatabase    = ":memory:"
 	defaultTimeout     = 30.0
+	defaultBusyTimeout = 5.0
+	defaultDatabase    = ":memory:"
 	defaultForeignKeys = true
 	defaultJournalMode = "WAL"
 	defaultSynchronous = "NORMAL"
 	defaultCacheSize   = 2000
-	defaultBusyTimeout = 5.0
 )
 
 // Configuration key constants
@@ -107,8 +108,8 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 // connect implements the connect function that creates a new database connection.
 func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var database string
-	var timeout float64
-	var busyTimeout float64
+	var timeout types.FloatOrInt
+	var busyTimeout types.FloatOrInt
 	var foreignKeys bool
 	var journalMode string
 	var synchronous string
@@ -131,10 +132,10 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 		database = m.ext.GetString(configKeyDatabase, defaultDatabase)
 	}
 	if timeout == 0 {
-		timeout = m.ext.GetFloat(configKeyTimeout, defaultTimeout)
+		timeout = types.FloatOrInt(m.ext.GetFloat(configKeyTimeout, defaultTimeout))
 	}
 	if busyTimeout == 0 {
-		busyTimeout = m.ext.GetFloat(configKeyBusyTimeout, defaultBusyTimeout)
+		busyTimeout = types.FloatOrInt(m.ext.GetFloat(configKeyBusyTimeout, defaultBusyTimeout))
 	}
 	if !foreignKeys {
 		foreignKeys = m.ext.GetBool(configKeyForeignKeys, defaultForeignKeys)
@@ -150,7 +151,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 
 	// Create a new database connection
-	db, err := openDatabase(database, timeout, busyTimeout, foreignKeys, journalMode, synchronous, cacheSize)
+	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeys, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -160,7 +161,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(database string, timeout float64, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
+func openDatabase(database string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
 	// Prepare connection string
 	connStr := database
 
@@ -171,49 +172,35 @@ func openDatabase(database string, timeout float64, busyTimeout float64, foreign
 	}
 
 	// Configure connection options
-	// Set busy timeout in milliseconds
-	_, err = db.Exec(fmt.Sprintf("PRAGMA busy_timeout = %d", int(busyTimeout*1000)))
-	if err != nil {
-		db.Close()
-		return nil, err
+	pragmas := []string{
+		fmt.Sprintf("PRAGMA busy_timeout = %d", int(busyTimeout*1000)),
+		fmt.Sprintf("PRAGMA journal_mode = %s", journalMode),
+		fmt.Sprintf("PRAGMA synchronous = %s", synchronous),
+		fmt.Sprintf("PRAGMA cache_size = %d", cacheSize),
+		fmt.Sprintf("PRAGMA foreign_keys = %d", boolToInt(foreignKeys)),
 	}
 
-	// Set journal mode
-	_, err = db.Exec(fmt.Sprintf("PRAGMA journal_mode = %s", journalMode))
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	// Set synchronous mode
-	_, err = db.Exec(fmt.Sprintf("PRAGMA synchronous = %s", synchronous))
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	// Set cache size
-	_, err = db.Exec(fmt.Sprintf("PRAGMA cache_size = %d", cacheSize))
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	// Set foreign keys
-	var fkValue int
-	if foreignKeys {
-		fkValue = 1
-	}
-	_, err = db.Exec(fmt.Sprintf("PRAGMA foreign_keys = %d", fkValue))
-	if err != nil {
-		db.Close()
-		return nil, err
+	// Execute all pragmas
+	for _, pragma := range pragmas {
+		_, err = db.Exec(pragma)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to execute %s: %w", pragma, err)
+		}
 	}
 
 	// Set timeout
 	db.SetConnMaxLifetime(time.Duration(timeout * float64(time.Second)))
 
 	return db, nil
+}
+
+// boolToInt converts a boolean value to an integer (1 for true, 0 for false)
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // Convert Starlark value to a Go value suitable for SQLite
