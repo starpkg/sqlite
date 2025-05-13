@@ -169,10 +169,7 @@ func (m *databaseMethods) insertMany(thread *starlark.Thread, fn *starlark.Built
 	}
 
 	// Get first row to determine columns
-	firstRowVal, err := valuesList.Index(0)
-	if err != nil {
-		return nil, err
-	}
+	firstRowVal := valuesList.Index(0)
 
 	firstRow, ok := firstRowVal.(*starlark.Dict)
 	if !ok {
@@ -215,11 +212,7 @@ func (m *databaseMethods) insertMany(thread *starlark.Thread, fn *starlark.Built
 	// Insert each row
 	var totalRows int64
 	for i := 0; i < valuesList.Len(); i++ {
-		rowVal, err := valuesList.Index(i)
-		if err != nil {
-			tx.Rollback()
-			return nil, err
-		}
+		rowVal := valuesList.Index(i)
 
 		row, ok := rowVal.(*starlark.Dict)
 		if !ok {
