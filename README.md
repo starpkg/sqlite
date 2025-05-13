@@ -2,8 +2,8 @@
 
 Starlark module for SQLite 3 database operations in Go.
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/1set/starpkg/sqlite)](https://goreportcard.com/report/github.com/1set/starpkg/sqlite)
-[![GoDoc](https://pkg.go.dev/badge/github.com/1set/starpkg/sqlite)](https://pkg.go.dev/github.com/1set/starpkg/sqlite)
+[![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
+[![GoDoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite)](https://pkg.go.dev/github.com/starpkg/sqlite)
 
 ## Features
 
@@ -19,8 +19,8 @@ Starlark module for SQLite 3 database operations in Go.
 
 ## Installation
 
-```
-go get github.com/1set/starpkg/sqlite
+```bash
+go get github.com/starpkg/sqlite
 ```
 
 ## Configuration
