@@ -22,8 +22,8 @@ func TestExample(t *testing.T) {
 load("sqlite", "connect")
 
 def main():
-    # Connect to an in-memory database
-    db = connect(":memory:")
+    # Connect to an in-memory database with timeout configuration
+    db = connect(":memory:", timeout=30.0, busy_timeout=5.0)
 
     # Create a users table
     db.execute("""

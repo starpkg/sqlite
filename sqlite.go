@@ -51,11 +51,11 @@ func NewModule() *Module {
 	return newModuleWithOptions(
 		genConfigOption(configKeyDatabase, "Path to SQLite database (use :memory: for in-memory)", defaultDatabase),
 		genConfigOption(configKeyTimeout, "Connection timeout in seconds", defaultTimeout),
+		genConfigOption(configKeyBusyTimeout, "Busy timeout in seconds", defaultBusyTimeout),
 		genConfigOption(configKeyForeignKeys, "Enable foreign key constraints", defaultForeignKeys),
 		genConfigOption(configKeyJournalMode, "Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF)", defaultJournalMode),
 		genConfigOption(configKeySynchronous, "Synchronous mode (FULL, NORMAL, OFF)", defaultSynchronous),
 		genConfigOption(configKeyCacheSize, "Cache size in number of pages", defaultCacheSize),
-		genConfigOption(configKeyBusyTimeout, "Busy timeout in seconds", defaultBusyTimeout),
 	)
 }
 
@@ -72,20 +72,20 @@ func genConfigOption[T any](name, description string, defaultValue T) *base.Conf
 func newModuleWithOptions(
 	databaseOpt *base.ConfigOption[string],
 	timeoutOpt *base.ConfigOption[float64],
+	busyTimeoutOpt *base.ConfigOption[float64],
 	foreignKeysOpt *base.ConfigOption[bool],
 	journalModeOpt *base.ConfigOption[string],
 	synchronousOpt *base.ConfigOption[string],
 	cacheSizeOpt *base.ConfigOption[int],
-	busyTimeoutOpt *base.ConfigOption[float64],
 ) *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
 		databaseOpt,
 		timeoutOpt,
+		busyTimeoutOpt,
 		foreignKeysOpt,
 		journalModeOpt,
 		synchronousOpt,
 		cacheSizeOpt,
-		busyTimeoutOpt,
 	)
 	return &Module{
 		cfgMod: cm,
@@ -108,20 +108,20 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var database string
 	var timeout float64
+	var busyTimeout float64
 	var foreignKeys bool
 	var journalMode string
 	var synchronous string
 	var cacheSize int
-	var busyTimeout float64
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"database?", &database,
 		"timeout?", &timeout,
+		"busy_timeout?", &busyTimeout,
 		"foreign_keys?", &foreignKeys,
 		"journal_mode?", &journalMode,
 		"synchronous?", &synchronous,
 		"cache_size?", &cacheSize,
-		"busy_timeout?", &busyTimeout,
 	); err != nil {
 		return nil, err
 	}
@@ -132,6 +132,9 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 	if timeout == 0 {
 		timeout = m.ext.GetFloat(configKeyTimeout, defaultTimeout)
+	}
+	if busyTimeout == 0 {
+		busyTimeout = m.ext.GetFloat(configKeyBusyTimeout, defaultBusyTimeout)
 	}
 	if !foreignKeys {
 		foreignKeys = m.ext.GetBool(configKeyForeignKeys, defaultForeignKeys)
@@ -145,12 +148,9 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	if cacheSize == 0 {
 		cacheSize = m.ext.GetInt(configKeyCacheSize, defaultCacheSize)
 	}
-	if busyTimeout == 0 {
-		busyTimeout = m.ext.GetFloat(configKeyBusyTimeout, defaultBusyTimeout)
-	}
 
 	// Create a new database connection
-	db, err := openDatabase(database, timeout, foreignKeys, journalMode, synchronous, cacheSize, busyTimeout)
+	db, err := openDatabase(database, timeout, busyTimeout, foreignKeys, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -160,7 +160,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(database string, timeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int, busyTimeout float64) (*sql.DB, error) {
+func openDatabase(database string, timeout float64, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
 	// Prepare connection string
 	connStr := database
 
