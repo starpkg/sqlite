@@ -25,17 +25,19 @@ go get github.com/starpkg/sqlite
 
 ## Configuration
 
-The `sqlite` module can be configured with the following options:
+The `sqlite` module can be configured with the following options (all optional, it will use the default values if not provided):
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `database` | string | `:memory:` | Path to SQLite database (use `:memory:` for in-memory) |
-| `timeout` | int | 30 | Connection timeout in seconds |
+| `timeout` | float | 30.0 | Connection timeout in seconds |
 | `foreign_keys` | bool | true | Enable foreign key constraints |
 | `journal_mode` | string | `WAL` | Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF) |
 | `synchronous` | string | `NORMAL` | Synchronous mode (FULL, NORMAL, OFF) |
 | `cache_size` | int | 2000 | Cache size in number of pages |
-| `busy_timeout` | int | 5000 | Busy timeout in milliseconds |
+| `busy_timeout` | float | 5.0 | Busy timeout in seconds |
+
+Module options will act if the corresponding argument is not provided in the `connect` or other functions.
 
 ## Module API
 
@@ -53,7 +55,7 @@ db = sqlite.connect(
     journal_mode="WAL",
     synchronous="NORMAL",
     cache_size=5000,
-    busy_timeout=10000
+    busy_timeout=10.0
 )
 
 # Close the database connection
