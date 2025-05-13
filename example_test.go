@@ -11,9 +11,10 @@ func Example() {
 	sqliteModule := NewModule()
 
 	// Create Starlet interpreter with the module
-	s := starlet.New(starlet.WithModuleMap(map[string]starlet.ModuleCreator{
-		"sqlite": sqliteModule.LoadModule,
-	}))
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(starlet.ModuleLoaderMap{
+		ModuleName: sqliteModule.LoadModule(),
+	})
 
 	// Example script that creates and uses a SQLite database
 	const script = `
@@ -76,7 +77,7 @@ main()
 `
 
 	// Execute the script
-	_, err := s.ExecScript("example.star", script, nil)
+	_, err := s.RunScript([]byte(script), nil)
 	if err != nil {
 		fmt.Printf("Error executing script: %v\n", err)
 		return
