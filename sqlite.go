@@ -110,7 +110,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	var database string
 	var timeout types.FloatOrInt
 	var busyTimeout types.FloatOrInt
-	var foreignKeys bool
+	var foreignKeys = types.NewNullableBool(false)
 	var journalMode string
 	var synchronous string
 	var cacheSize int
@@ -119,7 +119,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 		"database?", &database,
 		"timeout?", &timeout,
 		"busy_timeout?", &busyTimeout,
-		"foreign_keys?", &foreignKeys,
+		"foreign_keys?", foreignKeys,
 		"journal_mode?", &journalMode,
 		"synchronous?", &synchronous,
 		"cache_size?", &cacheSize,
@@ -137,9 +137,15 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	if busyTimeout == 0 {
 		busyTimeout = types.FloatOrInt(m.ext.GetFloat(configKeyBusyTimeout, defaultBusyTimeout))
 	}
-	if !foreignKeys {
-		foreignKeys = m.ext.GetBool(configKeyForeignKeys, defaultForeignKeys)
+
+	// Handle foreignKeys using NullableBool
+	var foreignKeysValue bool
+	if !foreignKeys.IsNull() {
+		foreignKeysValue = bool(foreignKeys.Value().Truth())
+	} else {
+		foreignKeysValue = m.ext.GetBool(configKeyForeignKeys, defaultForeignKeys)
 	}
+
 	if journalMode == "" {
 		journalMode = m.ext.GetString(configKeyJournalMode, defaultJournalMode)
 	}
@@ -151,7 +157,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 
 	// Create a new database connection
-	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeys, journalMode, synchronous, cacheSize)
+	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
