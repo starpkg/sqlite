@@ -3,12 +3,12 @@ package sqlite
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/1set/starlet"
+	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
@@ -232,58 +232,9 @@ func starlarkToSQLiteValue(v starlark.Value) (interface{}, error) {
 		return []byte(v), nil
 	case *starlark.Dict, *starlark.List:
 		// Convert to JSON
-		goValue := starlarkValueToGoValue(v)
-		jsonBytes, err := json.Marshal(goValue)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert to JSON: %w", err)
-		}
-		return string(jsonBytes), nil
+		return dataconv.MarshalStarlarkJSON(v, 0)
 	default:
 		return nil, fmt.Errorf("unsupported type for SQLite: %s", v.Type())
-	}
-}
-
-// starlarkValueToGoValue converts a Starlark value to a Go value
-func starlarkValueToGoValue(v starlark.Value) interface{} {
-	switch v := v.(type) {
-	case starlark.NoneType:
-		return nil
-	case starlark.Bool:
-		return bool(v)
-	case starlark.Int:
-		i, _ := v.Int64()
-		return i
-	case starlark.Float:
-		return float64(v)
-	case starlark.String:
-		return string(v)
-	case starlark.Bytes:
-		return []byte(v)
-	case *starlark.Dict:
-		result := make(map[string]interface{})
-		for _, item := range v.Items() {
-			key, ok := item.Index(0).(starlark.String)
-			if !ok {
-				continue
-			}
-			result[string(key)] = starlarkValueToGoValue(item.Index(1))
-		}
-		return result
-	case *starlark.List:
-		result := make([]interface{}, 0, v.Len())
-		for i := 0; i < v.Len(); i++ {
-			item := v.Index(i)
-			result = append(result, starlarkValueToGoValue(item))
-		}
-		return result
-	case *starlark.Tuple:
-		result := make([]interface{}, 0, v.Len())
-		for i := 0; i < v.Len(); i++ {
-			result = append(result, starlarkValueToGoValue(v.Index(i)))
-		}
-		return result
-	default:
-		return fmt.Sprint(v)
 	}
 }
 
