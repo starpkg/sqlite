@@ -1028,3 +1028,338 @@ main()
 
 	t.Log("Complex data types test executed successfully")
 }
+
+func TestComplexDataTypeEdgeCases(t *testing.T) {
+	// Create a new SQL module
+	sqliteModule := NewModule()
+
+	// Create Starlet interpreter with the module
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(starlet.ModuleLoaderMap{
+		ModuleName: sqliteModule.LoadModule(),
+	})
+
+	// Example script that tests edge cases for complex data types
+	const script = `
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create a table specifically for testing complex data types
+    db.execute("""
+        CREATE TABLE complex_types (
+            id INTEGER PRIMARY KEY,
+            test_name TEXT NOT NULL,
+            dict_data TEXT,
+            list_data TEXT,
+            mixed_data TEXT
+        )
+    """)
+    
+    # 1. Test empty dict and list
+    empty_dict = {}
+    empty_list = []
+    
+    id1 = db.insert("complex_types", {
+        "test_name": "empty_structures",
+        "dict_data": empty_dict,
+        "list_data": empty_list,
+        "mixed_data": {"empty_list": empty_list}
+    })
+    
+    # 2. Test Dict with all primitive data types
+    all_primitives = {
+        "null_value": None,
+        "bool_true": True,
+        "bool_false": False,
+        "int_value": 12345,
+        "float_value": 123.456,
+        "string_value": "Hello, world!",
+        "special_chars": "!@#$%^&*()\n\t\"'\\/"
+    }
+    
+    id2 = db.insert("complex_types", {
+        "test_name": "all_primitives",
+        "dict_data": all_primitives,
+        "list_data": [],
+        "mixed_data": None
+    })
+    
+    # 3. Test List with mixed types
+    mixed_list = [
+        None,
+        True,
+        False,
+        42,
+        3.14159,
+        "string",
+        ["nested", "list"],
+        {"nested": "dict"}
+    ]
+    
+    id3 = db.insert("complex_types", {
+        "test_name": "mixed_list",
+        "dict_data": {},
+        "list_data": mixed_list,
+        "mixed_data": None
+    })
+    
+    # 4. Test deeply nested structures
+    deep_nesting = {
+        "level1": {
+            "level2": {
+                "level3": {
+                    "level4": {
+                        "level5": {
+                            "value": "deeply nested",
+                            "list": [1, [2, [3, [4, [5]]]]]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    id4 = db.insert("complex_types", {
+        "test_name": "deep_nesting",
+        "dict_data": deep_nesting,
+        "list_data": [],
+        "mixed_data": None
+    })
+    
+    # 5. Test Dict with numeric keys (will be converted to strings in JSON)
+    numeric_keys = {
+        "0": "zero",
+        "1": "one",
+        "2": "two"
+    }
+    
+    id5 = db.insert("complex_types", {
+        "test_name": "numeric_keys",
+        "dict_data": numeric_keys,
+        "list_data": [],
+        "mixed_data": None
+    })
+    
+    # 6. Test extremely large list
+    large_list = list(range(1000))
+    
+    id6 = db.insert("complex_types", {
+        "test_name": "large_list",
+        "dict_data": {},
+        "list_data": large_list,
+        "mixed_data": None
+    })
+    
+    # 7. Test dict with unicode characters
+    unicode_dict = {
+        "emoji": "😀🙂🤔👍",
+        "chinese": "你好，世界",
+        "arabic": "مرحبا بالعالم",
+        "russian": "Привет, мир",
+        "greek": "Γειά σου Κόσμε"
+    }
+    
+    id7 = db.insert("complex_types", {
+        "test_name": "unicode_dict",
+        "dict_data": unicode_dict,
+        "list_data": [],
+        "mixed_data": None
+    })
+    
+    # Verify data was properly saved by retrieving and checking values
+    print("Testing retrieval and verification of stored complex types...")
+    
+    # Verify empty structures
+    row1 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id1])
+    if not row1:
+        fail("Failed to retrieve empty structures row")
+    
+    # Check round-trip persistence using raw string data
+    row2 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id2])
+    print("All primitives stored as type: {}".format(type(row2["dict_data"])))
+    if "null_value" not in row2["dict_data"] or "int_value" not in row2["dict_data"]:
+        fail("Failed to store/retrieve primitive values in dict")
+    
+    # Verify mixed list
+    row3 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id3])
+    if not "nested" in row3["list_data"]:
+        fail("Failed to store/retrieve nested values in list")
+    
+    # Verify deep nesting
+    row4 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id4])
+    if not "level1" in row4["dict_data"]:
+        fail("Failed to store/retrieve deeply nested structure")
+    
+    # Verify large list
+    row6 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id6])
+    if "list_data" not in row6 or len(row6["list_data"]) < 100:
+        fail("Failed to store/retrieve large list properly")
+    
+    # Verify unicode
+    row7 = db.query_one("SELECT * FROM complex_types WHERE id = ?", [id7])
+    if "emoji" not in row7["dict_data"] or "chinese" not in row7["dict_data"]:
+        fail("Failed to store/retrieve unicode data")
+    
+    # Demonstrate in-transaction complex data updates
+    tx = db.begin()
+    
+    # Update a complex structure within a transaction
+    # Create a new dict with the same content plus new item (Starlark has no dict.copy())
+    updated_dict = {
+        "null_value": None,
+        "bool_true": True,
+        "bool_false": False,
+        "int_value": 12345,
+        "float_value": 123.456,
+        "string_value": "Hello, world!",
+        "special_chars": "!@#$%^&*()\n\t\"\'\\/",
+        "new_key": "added in transaction"
+    }
+    
+    tx.execute(
+        "UPDATE complex_types SET dict_data = ? WHERE id = ?",
+        [updated_dict, id2]
+    )
+    
+    # Check that data is visible within the transaction
+    tx_row = tx.query_one("SELECT dict_data FROM complex_types WHERE id = ?", [id2])
+    if "new_key" not in tx_row["dict_data"]:
+        fail("Transaction update of complex data failed")
+    
+    # Commit the transaction
+    tx.commit()
+    
+    # Verify update persisted
+    after_tx = db.query_one("SELECT dict_data FROM complex_types WHERE id = ?", [id2])
+    if "new_key" not in after_tx["dict_data"]:
+        fail("Transaction commit didn't persist complex data update")
+    
+    print("Successfully verified complex type handling")
+    
+    # Close the connection
+    db.close()
+    
+    print("✓ All complex data type edge cases passed")
+
+main()
+`
+
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Complex data type edge cases test executed successfully")
+}
+
+func TestBinaryData(t *testing.T) {
+	// Create a new SQL module
+	sqliteModule := NewModule()
+
+	// Create Starlet interpreter with the module
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(starlet.ModuleLoaderMap{
+		ModuleName: sqliteModule.LoadModule(),
+	})
+
+	// Example script that demonstrates handling of binary data with bytes type
+	const script = `
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create a table with a BLOB column
+    db.execute("""
+        CREATE TABLE binary_data (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            data BLOB
+        )
+    """)
+    
+    # Create some binary data using bytes type
+    # In Starlark, binary data is represented using the 'bytes' type
+    binary_data1 = bytes([0, 1, 2, 3, 4, 5, 255, 254, 253, 252])
+    binary_data2 = bytes([10, 20, 30, 40, 50, 60, 70, 80, 90])
+    
+    # Test data with null bytes and special characters
+    binary_data3 = bytes([0, 0, 0, 65, 66, 67, 0, 0, 0])  # Null bytes with "ABC" in the middle
+    
+    # Insert binary data
+    id1 = db.insert("binary_data", {
+        "name": "sample1",
+        "data": binary_data1
+    })
+    
+    id2 = db.insert("binary_data", {
+        "name": "sample2",
+        "data": binary_data2
+    })
+    
+    id3 = db.insert("binary_data", {
+        "name": "sample3",
+        "data": binary_data3
+    })
+    
+    # Retrieve and verify binary data
+    row1 = db.query_one("SELECT * FROM binary_data WHERE id = ?", [id1])
+    row2 = db.query_one("SELECT * FROM binary_data WHERE id = ?", [id2])
+    row3 = db.query_one("SELECT * FROM binary_data WHERE id = ?", [id3])
+    
+    # Verify retrieved data is still in bytes type
+    print("Retrieved binary data type: {}".format(type(row1["data"])))
+    
+    # Verify binary data content
+    if row1["data"] != binary_data1:
+        fail("Binary data 1 didn't match after round-trip")
+    
+    if row2["data"] != binary_data2:
+        fail("Binary data 2 didn't match after round-trip")
+    
+    if row3["data"] != binary_data3:
+        fail("Binary data 3 didn't match after round-trip")
+    
+    # Update binary data
+    updated_data = bytes([255, 255, 255, 0, 0, 0])
+    db.update("binary_data", {"data": updated_data}, "id = ?", [id1])
+    
+    # Verify update
+    updated_row = db.query_one("SELECT * FROM binary_data WHERE id = ?", [id1])
+    if updated_row["data"] != updated_data:
+        fail("Updated binary data didn't match after round-trip")
+    
+    # Test with a prepared statement
+    stmt = db.prepare("INSERT INTO binary_data (name, data) VALUES (?, ?)")
+    sample4_data = bytes([1, 3, 5, 7, 9, 11, 13])
+    stmt.execute(["sample4", sample4_data])
+    stmt.close()
+    
+    # Verify prepared statement insert
+    row4 = db.query_one("SELECT * FROM binary_data WHERE name = ?", ["sample4"])
+    if row4["data"] != sample4_data:
+        fail("Binary data 4 didn't match after prepared statement insert")
+    
+    print("All binary data tests passed successfully")
+    
+    # Close the connection
+    db.close()
+    
+    print("✓ All binary data tests passed")
+
+main()
+`
+
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Binary data test executed successfully")
+}
