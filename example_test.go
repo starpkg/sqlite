@@ -673,3 +673,136 @@ main()
 
 	t.Log("Error handling test executed successfully")
 }
+
+func TestSchemaOperations(t *testing.T) {
+	// Create a new SQL module
+	sqliteModule := NewModule()
+
+	// Create Starlet interpreter with the module
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(starlet.ModuleLoaderMap{
+		ModuleName: sqliteModule.LoadModule(),
+	})
+
+	// Example script that demonstrates schema operations: indices, truncate_table, and drop_table
+	const script = `
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create a table with multiple columns for testing
+    db.execute("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            category TEXT,
+            price REAL,
+            stock INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Add some indices to the table
+    db.execute("CREATE INDEX idx_products_name ON products (name)")
+    db.execute("CREATE INDEX idx_products_category ON products (category)")
+    db.execute("CREATE UNIQUE INDEX idx_products_combined ON products (name, category)")
+    
+    # Verify the indices were created
+    indices_list = db.indices("products")
+    print("Indices for products table:")
+    for idx in indices_list:
+        print("  - {} (SQL: {})".format(idx["name"], idx["sql"]))
+    
+    # Verify we have the correct number of indices
+    if len(indices_list) != 3:
+        fail("Expected 3 indices, found {}".format(len(indices_list)))
+    
+    # Check for specific indices
+    index_names = [idx["name"] for idx in indices_list]
+    expected_indices = ["idx_products_name", "idx_products_category", "idx_products_combined"]
+    
+    for idx_name in expected_indices:
+        if idx_name not in index_names:
+            fail("Expected index {} not found".format(idx_name))
+    
+    # Insert some test data
+    db.insert_many("products", [
+        {"name": "Laptop", "category": "Electronics", "price": 999.99, "stock": 10},
+        {"name": "Smartphone", "category": "Electronics", "price": 699.99, "stock": 20},
+        {"name": "Headphones", "category": "Accessories", "price": 149.99, "stock": 30},
+        {"name": "Keyboard", "category": "Accessories", "price": 89.99, "stock": 15}
+    ])
+    
+    # Verify records were inserted
+    count = db.count("products", "")
+    if count != 4:
+        fail("Expected 4 products, found {}".format(count))
+    print("Inserted {} product records".format(count))
+    
+    # Test truncate_table functionality
+    db.truncate_table("products")
+    
+    # Verify the table is empty but still exists
+    count_after_truncate = db.count("products", "")
+    if count_after_truncate != 0:
+        fail("Table should be empty after truncate, found {} records".format(count_after_truncate))
+    print("Table truncated successfully, {} records remaining".format(count_after_truncate))
+    
+    # Verify the table structure is still intact
+    if not db.table_exists("products"):
+        fail("Table should still exist after truncate")
+    
+    # Verify indices are still present after truncate
+    indices_after_truncate = db.indices("products")
+    if len(indices_after_truncate) != 3:
+        fail("Indices should remain after truncate")
+    print("Table structure and indices preserved after truncate")
+    
+    # Insert one record to verify the table is still usable
+    db.insert("products", {"name": "Test", "category": "Test", "price": 10.0, "stock": 1})
+    count_after_insert = db.count("products", "")
+    if count_after_insert != 1:
+        fail("Failed to insert after truncate")
+    print("Successfully inserted record after truncate")
+    
+    # Test drop_table functionality
+    db.drop_table("products")
+    
+    # Verify the table no longer exists
+    if db.table_exists("products"):
+        fail("Table should not exist after drop_table")
+    print("Table dropped successfully")
+    
+    # Verify we can create the table again after dropping it
+    db.create_table("products", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "price": "REAL DEFAULT 0.0"
+    })
+    
+    if not db.table_exists("products"):
+        fail("Failed to recreate table after dropping")
+    print("Successfully recreated table after dropping")
+    
+    # Insert a record in the new table to verify it works
+    product_id = db.insert("products", {"name": "New Product", "price": 49.99})
+    if product_id != 1:
+        fail("Expected first product ID to be 1, got {}".format(product_id))
+    
+    # Close the connection
+    db.close()
+    
+    print("✓ All schema operations tests passed")
+
+main()
+`
+
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Schema operations test executed successfully")
+}
