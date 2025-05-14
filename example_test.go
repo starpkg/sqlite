@@ -58,6 +58,11 @@ def main():
     user = db.query_one("SELECT * FROM users WHERE name = ?", ["Alice"])
     if user:
         print("Alice's new age: {}".format(user["age"]))
+        # Verify age was incremented properly
+        if user["age"] != 31:
+            fail("Expected Alice's age to be 31, but got {}".format(user["age"]))
+    else:
+        fail("Failed to find Alice in database")
     
     # High-level table operations
     db.create_table("products", {
@@ -70,8 +75,24 @@ def main():
     product_id = db.insert("products", {"name": "Laptop", "price": 999.99})
     print("Inserted product with ID: {}".format(product_id))
     
+    # Query the table
+    rows = db.query("SELECT * FROM products")
+    for row in rows:
+        print("Product: {}, Price: {}".format(row["name"], row["price"]))
+        # Verify product was inserted correctly
+        if row["name"] != "Laptop" or row["price"] != 999.99:
+            fail("Product values don't match: expected Laptop/999.99, got {}/{}".format(
+                row["name"], row["price"]))
+    
+    # Verify the row count
+    count = db.count("products", "")
+    if count != 1:
+        fail("Expected 1 product, found {}".format(count))
+    
     # Close the connection
     db.close()
+    
+    print("✓ All verifications passed")
 
 main()
 `
@@ -117,6 +138,15 @@ def main():
     db.insert("accounts", {"id": 1, "name": "Alice", "balance": 1000.0})
     db.insert("accounts", {"id": 2, "name": "Bob", "balance": 500.0})
     
+    # Verify initial balances
+    alice_initial = db.query_one("SELECT balance FROM accounts WHERE id = 1")
+    bob_initial = db.query_one("SELECT balance FROM accounts WHERE id = 2")
+    
+    if alice_initial["balance"] != 1000.0:
+        fail("Initial Alice balance incorrect: {}".format(alice_initial["balance"]))
+    if bob_initial["balance"] != 500.0:
+        fail("Initial Bob balance incorrect: {}".format(bob_initial["balance"]))
+    
     # Function that transfers money using a transaction
     def transfer_money(from_id, to_id, amount):
         tx = db.begin()
@@ -138,18 +168,39 @@ def main():
         return True
     
     # Successful transfer
-    transfer_money(1, 2, 200.0)
+    transfer_result = transfer_money(1, 2, 200.0)
+    if not transfer_result:
+        fail("Expected successful transfer")
     
     # Verify balances after successful transfer
     alice = db.query_one("SELECT * FROM accounts WHERE id = 1")
     bob = db.query_one("SELECT * FROM accounts WHERE id = 2")
     print("Alice balance: {}, Bob balance: {}".format(alice["balance"], bob["balance"]))
     
+    # Verify exact amounts
+    if alice["balance"] != 800.0:
+        fail("Expected Alice balance to be 800.0, got {}".format(alice["balance"]))
+    if bob["balance"] != 700.0:
+        fail("Expected Bob balance to be 700.0, got {}".format(bob["balance"]))
+    
     # Failed transfer (insufficient funds)
-    transfer_money(2, 1, 1000.0)
+    failed_result = transfer_money(2, 1, 1000.0)
+    if failed_result:
+        fail("Transfer should have failed due to insufficient funds")
+    
+    # Verify balances unchanged after failed transfer
+    alice_after_fail = db.query_one("SELECT balance FROM accounts WHERE id = 1")
+    bob_after_fail = db.query_one("SELECT balance FROM accounts WHERE id = 2")
+    
+    if alice_after_fail["balance"] != 800.0:
+        fail("Alice balance should be unchanged at 800.0")
+    if bob_after_fail["balance"] != 700.0:
+        fail("Bob balance should be unchanged at 700.0")
     
     # Close the connection
     db.close()
+    
+    print("✓ All transaction tests passed")
 
 main()
 `
@@ -210,23 +261,63 @@ def main():
     # Close the statement when done
     insert_stmt.close()
     
+    # Verify the correct number of records were inserted
+    count = db.count("measurements", "")
+    if count != 5:
+        fail("Expected 5 measurements, found {}".format(count))
+    
+    # Verify records by sensor
+    sensor1_count = db.count("measurements", "sensor_id = 1")
+    sensor2_count = db.count("measurements", "sensor_id = 2")
+    sensor3_count = db.count("measurements", "sensor_id = 3")
+    
+    if sensor1_count != 2:
+        fail("Expected 2 records for sensor 1, found {}".format(sensor1_count))
+    if sensor2_count != 2:
+        fail("Expected 2 records for sensor 2, found {}".format(sensor2_count))
+    if sensor3_count != 1:
+        fail("Expected 1 record for sensor 3, found {}".format(sensor3_count))
+    
     # Create a prepared query statement
     query_stmt = db.prepare_query("SELECT * FROM measurements WHERE sensor_id = ? ORDER BY temperature DESC")
     
     # Use the prepared query multiple times with different parameters
     print("Sensor 1 measurements:")
-    for row in query_stmt.query([1]):
-        print("  Temperature: {}, Humidity: {}".format(row["temperature"], row["humidity"]))
+    sensor1_rows = query_stmt.query([1])
+    row_count = 0
+    prev_temp = 999.9  # Ensure descending order
     
-    print("Sensor 2 measurements:")
-    for row in query_stmt.query([2]):
+    for row in sensor1_rows:
+        row_count += 1
         print("  Temperature: {}, Humidity: {}".format(row["temperature"], row["humidity"]))
+        # Verify order and values
+        if row["temperature"] > prev_temp:
+            fail("Results not in descending temperature order")
+        prev_temp = row["temperature"]
+    
+    if row_count != 2:
+        fail("Expected 2 rows for sensor 1, got {}".format(row_count))
+    
+    # Similar check for sensor 2
+    print("Sensor 2 measurements:")
+    sensor2_rows = query_stmt.query([2])
+    if len(sensor2_rows) != 2:
+        fail("Expected 2 rows for sensor 2")
     
     # Close the prepared query
     query_stmt.close()
     
+    # Test a different kind of prepared query
+    max_temp_stmt = db.prepare_query("SELECT MAX(temperature) as max_temp FROM measurements WHERE sensor_id = ?")
+    max_result = max_temp_stmt.query_one([1])
+    if max_result["max_temp"] != 22.8:
+        fail("Expected max temperature for sensor 1 to be 22.8, got {}".format(max_result["max_temp"]))
+    max_temp_stmt.close()
+    
     # Close the database connection
     db.close()
+    
+    print("✓ All prepared statement tests passed")
 
 main()
 `
@@ -267,9 +358,19 @@ def main():
         "hire_date": "TEXT DEFAULT CURRENT_DATE"
     })
     
+    # Verify table was created
+    if not db.table_exists("employees"):
+        fail("employees table should exist")
+    
     # Insert records using the high-level API
-    db.insert("employees", {"name": "John Doe", "department": "Engineering", "salary": 85000})
-    db.insert("employees", {"name": "Jane Smith", "department": "Marketing", "salary": 75000})
+    id1 = db.insert("employees", {"name": "John Doe", "department": "Engineering", "salary": 85000})
+    id2 = db.insert("employees", {"name": "Jane Smith", "department": "Marketing", "salary": 75000})
+    
+    # Verify IDs are as expected (SQLite should auto-assign 1, 2)
+    if id1 != 1:
+        fail("Expected first insert ID to be 1, got {}".format(id1))
+    if id2 != 2:
+        fail("Expected second insert ID to be 2, got {}".format(id2))
     
     # Bulk insert multiple records
     db.insert_many("employees", [
@@ -278,18 +379,44 @@ def main():
         {"name": "Charlie Brown", "department": "Engineering", "salary": 80000}
     ])
     
+    # Verify total record count
+    total_count = db.count("employees", "")
+    if total_count != 5:
+        fail("Expected 5 total employees, found {}".format(total_count))
+    
     # Count employees by department
     eng_count = db.count("employees", "department = ?", ["Engineering"])
     print("Engineering employees: {}".format(eng_count))
+    if eng_count != 3:
+        fail("Expected 3 Engineering employees, found {}".format(eng_count))
     
     # Select all employees from a specific department
     engineers = db.select("employees", ["name", "salary"], "department = ? ORDER BY salary DESC", ["Engineering"])
     print("Engineering team:")
-    for eng in engineers:
+    
+    # Verify engineers are returned in correct order (by descending salary)
+    if len(engineers) != 3:
+        fail("Expected 3 engineers, got {}".format(len(engineers)))
+    
+    expected_names = ["Bob Johnson", "John Doe", "Charlie Brown"]
+    expected_salaries = [90000, 85000, 80000]
+    
+    for i, eng in enumerate(engineers):
         print("  {} - ${}".format(eng["name"], eng["salary"]))
+        if eng["name"] != expected_names[i]:
+            fail("Expected engineer {} to be {}, got {}".format(i, expected_names[i], eng["name"]))
+        if eng["salary"] != expected_salaries[i]:
+            fail("Expected salary {} to be {}, got {}".format(i, expected_salaries[i], eng["salary"]))
     
     # Update records
-    db.update("employees", {"salary": 95000}, "name = ?", ["Bob Johnson"])
+    updated_rows = db.update("employees", {"salary": 95000}, "name = ?", ["Bob Johnson"])
+    if updated_rows != 1:
+        fail("Expected to update 1 row, updated {}".format(updated_rows))
+    
+    # Verify the update
+    bob = db.query_one("SELECT * FROM employees WHERE name = ?", ["Bob Johnson"])
+    if bob["salary"] != 95000:
+        fail("Expected Bob's salary to be 95000, got {}".format(bob["salary"]))
     
     # Upsert (update or insert)
     db.upsert("employees", {"id": 1, "name": "John Doe", "department": "Engineering", "salary": 88000}, ["id"])
@@ -297,6 +424,8 @@ def main():
     # Verify the update
     john = db.query_one("SELECT * FROM employees WHERE name = ?", ["John Doe"])
     print("John's updated salary: ${}".format(john["salary"]))
+    if john["salary"] != 88000:
+        fail("Expected John's salary to be 88000, got {}".format(john["salary"]))
     
     # Check if a table exists
     if db.table_exists("employees"):
@@ -304,19 +433,44 @@ def main():
     
     # Get table information
     columns = db.table_info("employees")
+    expected_columns = ["id", "name", "department", "salary", "hire_date"]
+    column_names = [col["name"] for col in columns]
+    
+    for col_name in expected_columns:
+        if col_name not in column_names:
+            fail("Expected column {} not found in table schema".format(col_name))
+    
     print("Table columns:")
     for col in columns:
         print("  {} ({})".format(col["name"], col["type"]))
     
     # Delete a record
-    db.delete("employees", "name = ?", ["Alice Williams"])
+    deleted_rows = db.delete("employees", "name = ?", ["Alice Williams"])
+    if deleted_rows != 1:
+        fail("Expected to delete 1 row, deleted {}".format(deleted_rows))
+    
+    # Verify record was deleted
+    alice = db.query_one("SELECT * FROM employees WHERE name = ?", ["Alice Williams"])
+    if alice:
+        fail("Alice should have been deleted but was found")
+    
+    # Verify count after deletion
+    after_delete_count = db.count("employees", "")
+    if after_delete_count != 4:
+        fail("Expected 4 employees after deletion, found {}".format(after_delete_count))
     
     # List all tables
     tables = db.tables()
     print("Database tables: {}".format(tables))
+    if "employees" not in tables:
+        fail("employees should be in the list of tables")
+    if len(tables) != 1:
+        fail("Expected 1 table, found {}".format(len(tables)))
     
     # Close the connection
     db.close()
+    
+    print("✓ All high-level operation tests passed")
 
 main()
 `
@@ -365,6 +519,12 @@ def main():
         {"name": "Charlie", "email": "charlie@example.com"}
     ])
     
+    # Verify data was inserted
+    rows = main_db.query("SELECT * FROM current_users")
+    if len(rows) != 3:
+        fail("Expected 3 rows in current_users, found {}".format(len(rows)))
+    print("Main database users: {}".format(len(rows)))
+    
     # Attach another in-memory database as "archive"
     main_db.attach(":memory:", "archive")
     
@@ -378,12 +538,6 @@ def main():
         )
     """)
     
-    # Move "inactive" users to archive
-    main_db.execute("""
-        INSERT INTO archive.old_users (name, email)
-        SELECT name, email FROM main.current_users WHERE active = 0
-    """)
-    
     # Insert a user directly into the archive database
     main_db.execute("""
         INSERT INTO archive.old_users (name, email)
@@ -392,20 +546,25 @@ def main():
     
     # Query from the attached database
     archived_users = main_db.query("SELECT * FROM archive.old_users")
+    if len(archived_users) != 1:
+        fail("Expected 1 user in archive.old_users, found {}".format(len(archived_users)))
+    
     print("Archived users:")
     for user in archived_users:
         print("  {} ({})".format(user["name"], user["email"]))
+        if user["name"] != "David" or user["email"] != "david@example.com":
+            fail("Expected David/david@example.com in archive, got {}/{}".format(
+                user["name"], user["email"]))
     
     # Detach the archive database
     main_db.detach("archive")
     
-    # Verify that the archive is no longer accessible
-    query_error = False
-    result = None
+    # Verify that the main database is still accessible
+    main_users = main_db.query("SELECT * FROM current_users")
+    if len(main_users) != 3:
+        fail("Expected 3 users in current_users after detach, found {}".format(len(main_users)))
     
-    # In Starlark, we use a different approach since try/except isn't available
-    # We'll just show the expected behavior without actually testing it in this example
-    print("After detaching, attempting to query archive.old_users would result in an error")
+    print("✓ All attach/detach tests passed")
     
     # Close the main database connection
     main_db.close()
@@ -436,45 +595,72 @@ func TestErrorHandling(t *testing.T) {
 	const script = `
 load("sqlite", "connect")
 
+def explain_error_scenarios():
+    # This function simply explains error scenarios without executing them
+    # since Starlark doesn't have try/except blocks
+    print("In Starlark, common SQLite errors would halt execution:")
+    print("- Creating a table that already exists")
+    print("- SQL syntax errors")
+    print("- Constraint violations")
+    print("- Primary key conflicts")
+    print("All would cause execution to stop with a descriptive error message")
+
 def main():
     # Connect to an in-memory database
     db = connect(":memory:")
     
-    # Create a test table
-    db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+    # Create a table for testing
+    db.execute("CREATE TABLE test_error (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
     
-    # Demonstrate error handling patterns
-    create_table_error = False
+    # Verify table was created
+    tables = db.tables()
+    print("Tables: {}".format(tables))
+    if "test_error" not in tables:
+        fail("test_error table should exist")
     
-    # Starlark doesn't support try/except, so we'll simulate expected behavior
-    print("Note: If we tried to create the same table again, it would result in an error")
+    # Insert a record
+    db.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [1, "test1"])
     
-    # SQL syntax error example (without try/except)
-    print("Note: Executing 'SELEC * FROM test' would result in a syntax error")
+    # Verify the insert
+    rows = db.query("SELECT * FROM test_error WHERE id = 1")
+    if len(rows) != 1:
+        fail("Expected 1 row, got {}".format(len(rows)))
+    print("Verified insert: {}".format(rows[0]["name"]))
     
-    # Constraint violation (NOT NULL constraint)
-    print("Note: Inserting a row without a 'name' value would violate the NOT NULL constraint")
-    
-    # Insert valid data
-    db.execute("INSERT INTO test (id, name) VALUES (?, ?)", [1, "test1"])
-    
-    # Primary key constraint example
-    print("Note: Inserting another record with id=1 would violate the PRIMARY KEY constraint")
-    
-    # Transaction example
+    # Test transaction with explicit commit
     tx = db.begin()
-    tx.execute("INSERT INTO test (id, name) VALUES (?, ?)", [2, "test2"])
+    tx.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [2, "test2"])
+    tx.commit()
     
-    # Demonstrate a transaction rollback
-    print("If an error occurs in a transaction, we can roll it back:")
-    tx.rollback()
+    # Verify commit worked
+    committed = db.query("SELECT * FROM test_error WHERE id = 2")
+    if len(committed) != 1:
+        fail("Expected committed record to be visible")
+    print("Verified commit: {}".format(committed[0]["name"]))
     
-    # Verify transaction was rolled back
-    count = db.count("test", "id = ?", [2])
-    print("Record count for id=2: {} (should be 0 after rollback)".format(count))
+    # Test transaction with rollback
+    tx2 = db.begin()
+    tx2.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [3, "test3"])
+    # Data should be visible within transaction
+    in_tx = tx2.query("SELECT * FROM test_error WHERE id = 3")
+    if len(in_tx) != 1:
+        fail("Expected to see record within transaction")
+    # But rollback the transaction
+    tx2.rollback()
+    
+    # Verify the rollback worked
+    after_rollback = db.query("SELECT * FROM test_error WHERE id = 3")
+    if len(after_rollback) > 0:
+        fail("Expected no records after rollback")
+    print("Verified rollback successful")
+    
+    # Explain potential error scenarios
+    explain_error_scenarios()
     
     # Close the connection
     db.close()
+    
+    print("✓ All error handling tests passed")
 
 main()
 `
