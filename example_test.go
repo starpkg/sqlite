@@ -6,7 +6,20 @@ import (
 	"github.com/1set/starlet"
 )
 
-func TestExample(t *testing.T) {
+// runTestScript is a helper function that executes a Starlark script with the SQLite module.
+// This reduces boilerplate code in test functions by centralizing the common setup logic.
+//
+// Args:
+//   t: The testing.T instance for the current test
+//   script: The Starlark script to execute
+//
+// The function will automatically:
+// 1. Create a new SQLite module
+// 2. Set up a Starlet interpreter
+// 3. Add the SQLite module to the interpreter
+// 4. Execute the provided script
+// 5. Handle any execution errors
+func runTestScript(t *testing.T, script string) {
 	// Create a new SQL module
 	sqliteModule := NewModule()
 
@@ -16,6 +29,16 @@ func TestExample(t *testing.T) {
 		ModuleName: sqliteModule.LoadModule(),
 	})
 
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Test executed successfully")
+}
+
+func TestExample(t *testing.T) {
 	// Example script that creates and uses a SQLite database
 	const script = `
 # Load the sqlite module
@@ -97,26 +120,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
-	// If we get here, the test passed
+	runTestScript(t, script)
 	t.Log("Example test executed successfully")
 }
 
 func TestTransactions(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates transaction operations
 	const script = `
 load("sqlite", "connect")
@@ -205,25 +213,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Transaction test executed successfully")
 }
 
 func TestPreparedStatements(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates prepared statements
 	const script = `
 load("sqlite", "connect")
@@ -322,25 +316,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Prepared statements test executed successfully")
 }
 
 func TestHighLevelOperations(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates high-level database operations
 	const script = `
 load("sqlite", "connect")
@@ -475,25 +455,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("High-level operations test executed successfully")
 }
 
 func TestAttachDetach(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates ATTACH and DETACH operations
 	const script = `
 load("sqlite", "connect")
@@ -572,25 +538,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("ATTACH/DETACH test executed successfully")
 }
 
 func TestErrorHandling(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates error handling
 	const script = `
 load("sqlite", "connect")
@@ -665,25 +617,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Error handling test executed successfully")
 }
 
 func TestSchemaOperations(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates schema operations: indices, truncate_table, and drop_table
 	const script = `
 load("sqlite", "connect")
@@ -798,25 +736,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Schema operations test executed successfully")
 }
 
 func TestComplexDataTypes(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates complex data type handling
 	const script = `
 load("sqlite", "connect")
@@ -1020,25 +944,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Complex data types test executed successfully")
 }
 
 func TestComplexDataTypeEdgeCases(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that tests edge cases for complex data types
 	const script = `
 load("sqlite", "connect")
@@ -1247,25 +1157,11 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Complex data type edge cases test executed successfully")
 }
 
 func TestBinaryData(t *testing.T) {
-	// Create a new SQL module
-	sqliteModule := NewModule()
-
-	// Create Starlet interpreter with the module
-	s := starlet.NewDefault()
-	s.AddLazyloadModules(starlet.ModuleLoaderMap{
-		ModuleName: sqliteModule.LoadModule(),
-	})
-
 	// Example script that demonstrates handling of binary data with bytes type
 	const script = `
 load("sqlite", "connect")
@@ -1355,11 +1251,6 @@ def main():
 main()
 `
 
-	// Execute the script
-	_, err := s.RunScript([]byte(script), nil)
-	if err != nil {
-		t.Fatalf("Error executing script: %v\n", err)
-	}
-
+	runTestScript(t, script)
 	t.Log("Binary data test executed successfully")
 }
