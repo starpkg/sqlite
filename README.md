@@ -1,6 +1,6 @@
-# sqlite 🔒
+# 🗃️ `sqlite` - Effortless SQLite operations in Starlark
 
-Starlark module for SQLite 3 database operations in Go.
+A comprehensive Go module that brings the power of SQLite database operations to your Starlark scripts. This module provides both low-level SQL execution capabilities and high-level table management functions, making database interactions intuitive and straightforward while maintaining robust security features.
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
 [![GoDoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite)](https://pkg.go.dev/github.com/starpkg/sqlite)
