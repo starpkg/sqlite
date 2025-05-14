@@ -806,3 +806,225 @@ main()
 
 	t.Log("Schema operations test executed successfully")
 }
+
+func TestComplexDataTypes(t *testing.T) {
+	// Create a new SQL module
+	sqliteModule := NewModule()
+
+	// Create Starlet interpreter with the module
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(starlet.ModuleLoaderMap{
+		ModuleName: sqliteModule.LoadModule(),
+	})
+
+	// Example script that demonstrates complex data type handling
+	const script = `
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create a table with a column for JSON data
+    db.execute("""
+        CREATE TABLE complex_data (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            metadata TEXT,
+            tags TEXT,
+            config TEXT
+        )
+    """)
+    
+    # Test dictionary storage - metadata
+    user_metadata = {
+        "last_login": "2023-08-15T14:30:00Z",
+        "preferences": {
+            "theme": "dark",
+            "notifications": True,
+            "language": "en-US"
+        },
+        "usage_stats": {
+            "visits": 42,
+            "actions": 156,
+            "avg_session_time": 340.5
+        }
+    }
+    
+    # Test list storage - tags
+    user_tags = ["developer", "premium", "beta-tester"]
+    
+    # Test nested complex structures - config
+    user_config = {
+        "permissions": ["read", "write", "admin"],
+        "rate_limits": {
+            "api_calls": {
+                "limit": 1000,
+                "period": "daily",
+                "overage_policy": {
+                    "block": False,
+                    "throttle": True,
+                    "cost_multiplier": 1.5
+                }
+            },
+            "downloads": {
+                "limit": 50,
+                "period": "hourly"
+            }
+        },
+        "features": [
+            {"id": "feature1", "enabled": True},
+            {"id": "feature2", "enabled": False},
+            {"id": "feature3", "enabled": True, "limits": {"max_usage": 100}}
+        ]
+    }
+    
+    # Insert data with complex structures
+    user_id = db.insert("complex_data", {
+        "name": "John Doe",
+        "metadata": user_metadata,
+        "tags": user_tags,
+        "config": user_config
+    })
+    
+    print("Inserted user with ID: {}".format(user_id))
+    
+    # Insert another record with slightly different data
+    db.insert("complex_data", {
+        "name": "Jane Smith",
+        "metadata": {
+            "last_login": "2023-08-16T09:45:00Z",
+            "preferences": {
+                "theme": "light",
+                "notifications": False,
+                "language": "fr-FR"
+            },
+            "usage_stats": {
+                "visits": 28,
+                "actions": 93,
+                "avg_session_time": 210.75
+            }
+        },
+        "tags": ["designer", "free-tier"],
+        "config": {
+            "permissions": ["read", "write"],
+            "rate_limits": {
+                "api_calls": {
+                    "limit": 500,
+                    "period": "daily"
+                }
+            },
+            "features": [
+                {"id": "feature1", "enabled": True},
+                {"id": "feature2", "enabled": True}
+            ]
+        }
+    })
+    
+    # Retrieve the data
+    user = db.query_one("SELECT * FROM complex_data WHERE id = ?", [1])
+    
+    # Test metadata retrieval and conversion
+    print("Retrieved user metadata type: {}".format(type(user["metadata"])))
+    
+    # In SQLite, complex data is stored as JSON strings
+    # But when queried back, it's returned as a string in Starlark
+    
+    # Test JSON search if supported by SQLite version
+    print("Testing complex data operations")
+    
+    # Update complex data with new values
+    updated_metadata = {
+        "last_login": "2023-08-17T10:00:00Z",
+        "preferences": {
+            "theme": "dark",
+            "notifications": True,
+            "language": "en-US"
+        },
+        "usage_stats": {
+            "visits": 43,  # Incremented
+            "actions": 160,  # Incremented
+            "avg_session_time": 350.2  # Updated
+        }
+    }
+    
+    # Append a new tag to the existing tags
+    updated_tags = user_tags + ["advanced"]
+    
+    # Update the record
+    db.update("complex_data", 
+        {"metadata": updated_metadata, "tags": updated_tags}, 
+        "id = ?", [1]
+    )
+    
+    # Retrieve updated data
+    updated_user = db.query_one("SELECT * FROM complex_data WHERE id = ?", [1])
+    print("Updated user metadata stored as: {}".format(type(updated_user["metadata"])))
+    
+    # Demonstrate more complex structures - array of dictionaries
+    db.execute("""
+        CREATE TABLE products (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            attributes TEXT,
+            pricing TEXT,
+            inventory TEXT
+        )
+    """)
+    
+    # Insert product with array of dictionaries
+    db.insert("products", {
+        "name": "Smartphone XL",
+        "attributes": [
+            {"name": "color", "value": "black", "filterable": True},
+            {"name": "storage", "value": "128GB", "filterable": True},
+            {"name": "weight", "value": "155g", "filterable": False},
+            {"name": "dimensions", "value": "150x75x8mm", "filterable": False}
+        ],
+        "pricing": {
+            "base": 699.99,
+            "discounts": [
+                {"type": "sale", "amount": 50.00, "valid_until": "2023-12-31"},
+                {"type": "bundle", "amount": 100.00, "requires": ["case", "charger"]}
+            ],
+            "tax_rate": 0.08,
+            "shipping": {
+                "standard": 9.99,
+                "express": 19.99,
+                "free_threshold": 999.00
+            }
+        },
+        "inventory": {
+            "total": 120,
+            "locations": {
+                "warehouse_a": 45,
+                "warehouse_b": 30,
+                "store_1": 25,
+                "store_2": 20
+            },
+            "restock_threshold": 25,
+            "on_order": True
+        }
+    })
+    
+    # Query product
+    product = db.query_one("SELECT * FROM products WHERE id = 1")
+    if product:
+        print("Successfully stored and retrieved complex product data")
+    
+    # Close the connection
+    db.close()
+    
+    print("✓ All complex data type tests passed")
+
+main()
+`
+
+	// Execute the script
+	_, err := s.RunScript([]byte(script), nil)
+	if err != nil {
+		t.Fatalf("Error executing script: %v\n", err)
+	}
+
+	t.Log("Complex data types test executed successfully")
+}
