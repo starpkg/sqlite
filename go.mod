@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/1set/starlet v0.1.3
-	github.com/starpkg/base v0.0.4
+	github.com/starpkg/base v0.0.5
 	go.starlark.net v0.0.0-20240123142251-f86470692795
 	modernc.org/sqlite v1.24.0
 )
@@ -38,5 +38,3 @@ require (
 	modernc.org/strutil v1.1.3 // indirect
 	modernc.org/token v1.0.1 // indirect
 )
-
-replace github.com/starpkg/base => ../base
