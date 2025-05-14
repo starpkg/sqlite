@@ -7,10 +7,12 @@ import (
 	"github.com/starpkg/base"
 )
 
-// TestExample runs a simple example of SQLite usage
-func TestExample(t *testing.T) {
-	// Example script that creates and uses a SQLite database
-	const script = `
+func TestExamples(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{"BasicExample", `
 # Load the sqlite module
 load("sqlite", "connect")
 
@@ -88,18 +90,8 @@ def main():
     print("✓ All verifications passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Example test executed successfully")
-}
-
-func TestTransactions(t *testing.T) {
-	// Example script that demonstrates transaction operations
-	const script = `
+`},
+		{"Transactions", `
 load("sqlite", "connect")
 
 def main():
@@ -184,18 +176,8 @@ def main():
     print("✓ All transaction tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Transaction test executed successfully")
-}
-
-func TestPreparedStatements(t *testing.T) {
-	// Example script that demonstrates prepared statements
-	const script = `
+`},
+		{"PreparedStatements", `
 load("sqlite", "connect")
 
 def main():
@@ -290,18 +272,8 @@ def main():
     print("✓ All prepared statement tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Prepared statements test executed successfully")
-}
-
-func TestHighLevelOperations(t *testing.T) {
-	// Example script that demonstrates high-level database operations
-	const script = `
+`},
+		{"HighLevelOperations", `
 load("sqlite", "connect")
 
 def main():
@@ -432,18 +404,8 @@ def main():
     print("✓ All high-level operation tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("High-level operations test executed successfully")
-}
-
-func TestAttachDetach(t *testing.T) {
-	// Example script that demonstrates ATTACH and DETACH operations
-	const script = `
+`},
+		{"AttachDetach", `
 load("sqlite", "connect")
 
 def main():
@@ -518,18 +480,8 @@ def main():
     main_db.close()
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("ATTACH/DETACH test executed successfully")
-}
-
-func TestErrorHandling(t *testing.T) {
-	// Example script that demonstrates error handling
-	const script = `
+`},
+		{"ErrorHandling", `
 load("sqlite", "connect")
 
 def explain_error_scenarios():
@@ -600,18 +552,8 @@ def main():
     print("✓ All error handling tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Error handling test executed successfully")
-}
-
-func TestSchemaOperations(t *testing.T) {
-	// Example script that demonstrates schema operations: indices, truncate_table, and drop_table
-	const script = `
+`},
+		{"SchemaOperations", `
 load("sqlite", "connect")
 
 def main():
@@ -722,18 +664,8 @@ def main():
     print("✓ All schema operations tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Schema operations test executed successfully")
-}
-
-func TestComplexDataTypes(t *testing.T) {
-	// Example script that demonstrates complex data type handling
-	const script = `
+`},
+		{"ComplexDataTypes", `
 load("sqlite", "connect")
 
 def main():
@@ -933,18 +865,8 @@ def main():
     print("✓ All complex data type tests passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Complex data types test executed successfully")
-}
-
-func TestComplexDataTypeEdgeCases(t *testing.T) {
-	// Example script that tests edge cases for complex data types
-	const script = `
+`},
+		{"ComplexDataTypeEdgeCases", `
 load("sqlite", "connect")
 
 def main():
@@ -1149,18 +1071,8 @@ def main():
     print("✓ All complex data type edge cases passed")
 
 main()
-`
-
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Complex data type edge cases test executed successfully")
-}
-
-func TestBinaryData(t *testing.T) {
-	// Example script that demonstrates handling of binary data with bytes type
-	const script = `
+`},
+		{"BinaryData", `
 load("sqlite", "connect")
 
 def main():
@@ -1246,11 +1158,14 @@ def main():
     print("✓ All binary data tests passed")
 
 main()
-`
+`},
+	}
 
-	base.RunTestScript(t, script, "sqlite", func() starlet.ModuleLoader {
-		return NewModule().LoadModule()
-	}, nil)
-
-	t.Log("Binary data test executed successfully")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base.RunTestScript(t, tc.script, "sqlite", func() starlet.ModuleLoader {
+				return NewModule().LoadModule()
+			}, nil)
+		})
+	}
 }
