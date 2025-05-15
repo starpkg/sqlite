@@ -11,6 +11,7 @@ import (
 	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	startime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
 )
@@ -34,11 +35,11 @@ const (
 const (
 	configKeyDatabase    = "database"
 	configKeyTimeout     = "timeout"
+	configKeyBusyTimeout = "busy_timeout"
 	configKeyForeignKeys = "foreign_keys"
 	configKeyJournalMode = "journal_mode"
 	configKeySynchronous = "synchronous"
 	configKeyCacheSize   = "cache_size"
-	configKeyBusyTimeout = "busy_timeout"
 )
 
 // Module wraps the ConfigurableModule with specific functionality for SQLite operations.
@@ -230,6 +231,8 @@ func starlarkToSQLiteValue(v starlark.Value) (interface{}, error) {
 		return string(v), nil
 	case starlark.Bytes:
 		return []byte(v), nil
+	case startime.Time:
+		return time.Time(v), nil
 	case *starlark.Dict, *starlark.List:
 		// Convert to JSON
 		return dataconv.MarshalStarlarkJSON(v, 0)
@@ -257,6 +260,8 @@ func sqliteToStarlarkValue(v interface{}) (starlark.Value, error) {
 		return starlark.String(v), nil
 	case []byte:
 		return starlark.Bytes(v), nil
+	case time.Time:
+		return startime.Time(v), nil
 	default:
 		return nil, fmt.Errorf("unsupported SQLite type for Starlark: %T", v)
 	}
