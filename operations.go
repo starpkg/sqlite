@@ -115,7 +115,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name
-		columns = append(columns, quoteName(string(colName))) // Quote column name
+		columns = append(columns, quoteName(string(colName)))
 
 		// Add placeholder and value
 		placeholders = append(placeholders, "?")
@@ -129,7 +129,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 	// Build SQL statement
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		quoteName(table),
-		strings.Join(columns, ", "), // Already quoted
+		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "))
 
 	// Execute the statement
@@ -289,7 +289,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name and placeholder
-		setClauses = append(setClauses, fmt.Sprintf("%s = ?", quoteName(string(colName)))) // Quote column name
+		setClauses = append(setClauses, fmt.Sprintf("%s = ?", quoteName(string(colName))))
 
 		// Add parameter
 		val, err := starlarkToSQLiteValue(tuple.Index(1))
@@ -302,7 +302,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 	// Build SQL statement
 	sql := fmt.Sprintf("UPDATE %s SET %s",
 		quoteName(table),
-		strings.Join(setClauses, ", ")) // Already quoted
+		strings.Join(setClauses, ", "))
 
 	// Parse where clause and parameters
 	whereClause, whereParams, err := parseWhereClause(whereVal)
@@ -336,12 +336,12 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
-	var keyColumnsVal starlark.Value // Changed from keyColumns *starlark.List
+	var keyColumnsVal starlark.Value
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"values", &values,
-		"keys", &keyColumnsVal); err != nil { // Changed to keyColumnsVal
+		"keys", &keyColumnsVal); err != nil {
 		return nil, err
 	}
 
@@ -358,7 +358,7 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name
-		columns = append(columns, quoteName(string(colName))) // Quote column name here
+		columns = append(columns, quoteName(string(colName)))
 
 		// Add placeholder and value
 		placeholders = append(placeholders, "?")
@@ -370,7 +370,7 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 
 		// Add update clause
 		updateClauses = append(updateClauses, fmt.Sprintf("%s = excluded.%s",
-			quoteName(string(colName)), quoteName(string(colName)))) // Quote column names here
+			quoteName(string(colName)), quoteName(string(colName))))
 	}
 
 	// Extract key columns using extractColumns
@@ -384,13 +384,12 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Build SQL statement with UPSERT syntax (INSERT OR REPLACE)
-	// Column names in columns, conflictTarget, and updateClauses are already quoted
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s",
 		quoteName(table),
-		strings.Join(columns, ", "), // Already quoted
+		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
-		strings.Join(quoteNameList(conflictTarget), ", "), // Use quoteNameList for conflict target
-		strings.Join(updateClauses, ", "))                 // Already quoted
+		strings.Join(quoteNameList(conflictTarget), ", "),
+		strings.Join(updateClauses, ", "))
 
 	// Execute the statement
 	result, err := m.db.db.Exec(sql, params...)
