@@ -115,7 +115,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name
-		columns = append(columns, string(colName))
+		columns = append(columns, quoteName(string(colName))) // Quote column name
 
 		// Add placeholder and value
 		placeholders = append(placeholders, "?")
@@ -129,7 +129,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 	// Build SQL statement
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		quoteName(table),
-		strings.Join(columns, ", "),
+		strings.Join(columns, ", "), // Already quoted
 		strings.Join(placeholders, ", "))
 
 	// Execute the statement
@@ -177,13 +177,16 @@ func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Extract column names from first row
-	var columns []string
+	var originalColumnNames []string // Store original (unquoted) column names
+	var quotedColumnNames []string   // Store quoted column names for SQL
 	for _, tuple := range firstRow.Items() {
 		colName, ok := tuple.Index(0).(starlark.String)
 		if !ok {
 			return nil, fmt.Errorf("column name must be a string")
 		}
-		columns = append(columns, string(colName))
+		sColName := string(colName)
+		originalColumnNames = append(originalColumnNames, sColName)
+		quotedColumnNames = append(quotedColumnNames, quoteName(sColName))
 	}
 
 	// Begin transaction
@@ -193,12 +196,12 @@ func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Build SQL statement
-	placeholders := strings.Repeat("?, ", len(columns))
-	placeholders = placeholders[:len(placeholders)-2] // Remove trailing ", "
+	placeholders := strings.Repeat("?, ", len(quotedColumnNames)) // Use count of columns
+	placeholders = placeholders[:len(placeholders)-2]             // Remove trailing ", "
 
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		quoteName(table),
-		strings.Join(columns, ", "),
+		strings.Join(quotedColumnNames, ", "), // Use quoted names for SQL
 		placeholders)
 
 	// Prepare statement
@@ -220,17 +223,17 @@ func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, a
 			return nil, fmt.Errorf("values must be a list of dictionaries")
 		}
 
-		// Extract values in the same order as columns
+		// Extract values in the same order as originalColumnNames
 		var params []interface{}
-		for _, col := range columns {
-			val, found, err := row.Get(starlark.String(col))
+		for _, originalCol := range originalColumnNames { // Iterate using original names for lookup
+			val, found, err := row.Get(starlark.String(originalCol)) // Use original name for Get
 			if err != nil {
 				tx.Rollback()
 				return nil, err
 			}
 			if !found {
 				tx.Rollback()
-				return nil, fmt.Errorf("column %s missing in row %d", col, i)
+				return nil, fmt.Errorf("column %s missing in row %d", originalCol, i)
 			}
 			sqlVal, err := starlarkToSQLiteValue(val)
 			if err != nil {
@@ -286,7 +289,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name and placeholder
-		setClauses = append(setClauses, fmt.Sprintf("%s = ?", string(colName)))
+		setClauses = append(setClauses, fmt.Sprintf("%s = ?", quoteName(string(colName)))) // Quote column name
 
 		// Add parameter
 		val, err := starlarkToSQLiteValue(tuple.Index(1))
@@ -299,7 +302,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 	// Build SQL statement
 	sql := fmt.Sprintf("UPDATE %s SET %s",
 		quoteName(table),
-		strings.Join(setClauses, ", "))
+		strings.Join(setClauses, ", ")) // Already quoted
 
 	// Parse where clause and parameters
 	whereClause, whereParams, err := parseWhereClause(whereVal)
@@ -333,12 +336,12 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
-	var keyColumns *starlark.List
+	var keyColumnsVal starlark.Value // Changed from keyColumns *starlark.List
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"values", &values,
-		"keys", &keyColumns); err != nil {
+		"keys", &keyColumnsVal); err != nil { // Changed to keyColumnsVal
 		return nil, err
 	}
 
@@ -355,7 +358,7 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		}
 
 		// Add column name
-		columns = append(columns, string(colName))
+		columns = append(columns, quoteName(string(colName))) // Quote column name here
 
 		// Add placeholder and value
 		placeholders = append(placeholders, "?")
@@ -367,33 +370,27 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 
 		// Add update clause
 		updateClauses = append(updateClauses, fmt.Sprintf("%s = excluded.%s",
-			string(colName), string(colName)))
+			quoteName(string(colName)), quoteName(string(colName)))) // Quote column names here
 	}
 
-	// Extract key columns
-	var conflictTarget []string
-	iter := keyColumns.Iterate()
-	defer iter.Done()
-	var val starlark.Value
-	for iter.Next(&val) {
-		colName, ok := val.(starlark.String)
-		if !ok {
-			return nil, fmt.Errorf("key column name must be a string")
-		}
-		conflictTarget = append(conflictTarget, string(colName))
+	// Extract key columns using extractColumns
+	conflictTarget, err := extractColumns(keyColumnsVal)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract key columns: %w", err)
 	}
 
 	if len(conflictTarget) == 0 {
-		return nil, fmt.Errorf("at least one key column must be specified")
+		return nil, fmt.Errorf("at least one key column must be specified for upsert")
 	}
 
 	// Build SQL statement with UPSERT syntax (INSERT OR REPLACE)
+	// Column names in columns, conflictTarget, and updateClauses are already quoted
 	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s",
 		quoteName(table),
-		strings.Join(columns, ", "),
+		strings.Join(columns, ", "), // Already quoted
 		strings.Join(placeholders, ", "),
-		strings.Join(conflictTarget, ", "),
-		strings.Join(updateClauses, ", "))
+		strings.Join(quoteNameList(conflictTarget), ", "), // Use quoteNameList for conflict target
+		strings.Join(updateClauses, ", "))                 // Already quoted
 
 	// Execute the statement
 	result, err := m.db.db.Exec(sql, params...)
@@ -548,6 +545,15 @@ func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
 		// Handle invalid type
 		return "", nil, fmt.Errorf("where must be a string, bytes, or sequence, got %s", whereVal.Type())
 	}
+}
+
+// quoteNameList quotes a list of names.
+func quoteNameList(names []string) []string {
+	quotedNames := make([]string, len(names))
+	for i, name := range names {
+		quotedNames[i] = quoteName(name)
+	}
+	return quotedNames
 }
 
 // selectRecords selects records from a table.
