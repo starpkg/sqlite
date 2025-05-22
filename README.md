@@ -154,22 +154,22 @@ db.insert_many("users", [
 ])
 
 # Update records
-db.update("users", {"status": "active"}, "id = ?", [1])
-db.update("products", {"price": 29.99}, "category = ?", ["electronics"])
+db.update("users", {"status": "active"}, ["id = ?", 1])
+db.update("products", {"price": 29.99}, ["category = ?", "electronics"])
 
 # Upsert (insert or update if exists)
 db.upsert("users", {"id": 1, "name": "Alice", "email": "alice@example.com"}, ["id"])
 
 # Delete records
-db.delete("users", "id = ?", [1])
-db.delete("products", "category = ? AND price < ?", ["electronics", 10])
+db.delete("users", ["id = ?", 1])
+db.delete("products", ["category = ? AND price < ?", "electronics", 10])
 
 # Select records
-users = db.select("users", ["id", "name", "email"], "status = ?", ["active"])
-products = db.select("products", ["*"], "price > ?", [20])
+users = db.select("users", ["id", "name", "email"], ["status = ?", "active"])
+products = db.select("products", "*", ["price > ?", 20])
 
 # Count records
-count = db.count("users", "status = ?", ["active"])
+count = db.count("users", ["status = ?", "active"])
 ```
 
 ### ATTACH/DETACH Databases
@@ -257,10 +257,10 @@ for user in users:
     print(user["name"], user["age"], user["created_at"])
 
 # Update a record
-db.update("users", {"age": 31}, "name = ?", ["Alice"])
+db.update("users", {"age": 31}, ["name = ?", "Alice"])
 
 # Delete a record
-db.delete("users", "name = ?", ["Bob"])
+db.delete("users", ["name = ?", "Bob"])
 ```
 
 ### Transaction Example

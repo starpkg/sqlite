@@ -8,7 +8,7 @@ import (
 )
 
 // createTable creates a new table with the specified columns.
-func (m *databaseMethods) createTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columns *starlark.Dict
 
@@ -45,7 +45,7 @@ func (m *databaseMethods) createTable(thread *starlark.Thread, fn *starlark.Buil
 }
 
 // dropTable drops a table.
-func (m *databaseMethods) dropTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -66,7 +66,7 @@ func (m *databaseMethods) dropTable(thread *starlark.Thread, fn *starlark.Builti
 }
 
 // truncateTable removes all rows from a table.
-func (m *databaseMethods) truncateTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -93,7 +93,7 @@ func (m *databaseMethods) truncateTable(thread *starlark.Thread, fn *starlark.Bu
 }
 
 // insert inserts a record into a table.
-func (m *databaseMethods) insert(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 
@@ -153,7 +153,7 @@ func (m *databaseMethods) insert(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // insertMany inserts multiple records into a table.
-func (m *databaseMethods) insertMany(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var valuesList *starlark.List
 
@@ -263,17 +263,15 @@ func (m *databaseMethods) insertMany(thread *starlark.Thread, fn *starlark.Built
 }
 
 // update updates records in a table.
-func (m *databaseMethods) update(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
-	var whereClause string
-	var whereParams starlark.Sequence
+	var whereVal starlark.Value
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"values", &values,
-		"where", &whereClause,
-		"params?", &whereParams); err != nil {
+		"where?", &whereVal); err != nil {
 		return nil, err
 	}
 
@@ -298,27 +296,22 @@ func (m *databaseMethods) update(thread *starlark.Thread, fn *starlark.Builtin, 
 		params = append(params, val)
 	}
 
-	// Add where clause parameters
-	if whereParams != nil {
-		iter := whereParams.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			sqlVal, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, sqlVal)
-		}
-	}
-
 	// Build SQL statement
 	sql := fmt.Sprintf("UPDATE %s SET %s",
 		quoteName(table),
 		strings.Join(setClauses, ", "))
 
+	// Parse where clause and parameters
+	whereClause, whereParams, err := parseWhereClause(whereVal)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add WHERE clause if provided
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
+		// Add where clause parameters to the param list
+		params = append(params, whereParams...)
 	}
 
 	// Execute the statement
@@ -337,7 +330,7 @@ func (m *databaseMethods) update(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // upsert inserts a record if it doesn't exist, or updates it if it does.
-func (m *databaseMethods) upsert(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 	var keyColumns *starlark.List
@@ -418,38 +411,28 @@ func (m *databaseMethods) upsert(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // delete deletes records from a table.
-func (m *databaseMethods) delete(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) delete(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
-	var whereClause string
-	var whereParams starlark.Sequence
+	var whereVal starlark.Value
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
-		"where", &whereClause,
-		"params?", &whereParams); err != nil {
+		"where?", &whereVal); err != nil {
 		return nil, err
 	}
 
 	// Build SQL statement
 	sql := fmt.Sprintf("DELETE FROM %s", quoteName(table))
 
-	if whereClause != "" {
-		sql += " WHERE " + whereClause
+	// Parse where clause and parameters
+	whereClause, params, err := parseWhereClause(whereVal)
+	if err != nil {
+		return nil, err
 	}
 
-	// Extract parameters
-	var params []interface{}
-	if whereParams != nil {
-		iter := whereParams.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			sqlVal, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, sqlVal)
-		}
+	// Add WHERE clause if provided
+	if whereClause != "" {
+		sql += " WHERE " + whereClause
 	}
 
 	// Execute the statement
@@ -467,21 +450,116 @@ func (m *databaseMethods) delete(thread *starlark.Thread, fn *starlark.Builtin, 
 	return starlark.MakeInt64(rowsAffected), nil
 }
 
+// extractColumns extracts column names from a Starlark value,
+// which can be either a string or a sequence of strings.
+func extractColumns(columnsVal starlark.Value) ([]string, error) {
+	var colNames []string
+
+	// Handle nil case
+	if columnsVal == nil || columnsVal == starlark.None {
+		return colNames, nil
+	}
+
+	// Handle string case
+	if str, ok := columnsVal.(starlark.String); ok {
+		colNames = append(colNames, string(str))
+		return colNames, nil
+	}
+
+	// Handle sequence case
+	if seq, ok := columnsVal.(starlark.Sequence); ok {
+		iter := seq.Iterate()
+		defer iter.Done()
+		var val starlark.Value
+		for iter.Next(&val) {
+			colName, ok := val.(starlark.String)
+			if !ok {
+				return nil, fmt.Errorf("column name must be a string, got %s", val.Type())
+			}
+			colNames = append(colNames, string(colName))
+		}
+		return colNames, nil
+	}
+
+	return nil, fmt.Errorf("columns must be a string or sequence of strings, got %s", columnsVal.Type())
+}
+
+// parseWhereClauseString extracts the where clause from a string value
+func parseWhereClauseString(str starlark.String) (string, []interface{}, error) {
+	whereClause := string(str)
+	return whereClause, nil, nil
+}
+
+// parseWhereClauseSequence extracts the where clause and parameters from a sequence value
+func parseWhereClauseSequence(seq starlark.Sequence) (string, []interface{}, error) {
+	if seq.Len() == 0 {
+		return "", nil, nil
+	}
+
+	var params []interface{}
+
+	// Get the first item as the clause
+	var clause starlark.Value
+	iter := seq.Iterate()
+	defer iter.Done()
+	if !iter.Next(&clause) {
+		return "", nil, nil
+	}
+
+	// Convert to string
+	str, ok := clause.(starlark.String)
+	if !ok {
+		return "", nil, fmt.Errorf("where clause must be a string, got %s", clause.Type())
+	}
+	whereClause := string(str)
+
+	// Get remaining items as parameters
+	for iter.Next(&clause) {
+		sqlVal, err := starlarkToSQLiteValue(clause)
+		if err != nil {
+			return "", nil, err
+		}
+		params = append(params, sqlVal)
+	}
+
+	return whereClause, params, nil
+}
+
+// parseWhereClause parses a where clause from a Starlark value.
+// The value can be a string (just the clause) or a sequence where the first
+// element is the clause and the rest are parameters.
+func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
+	// Handle nil case
+	if whereVal == nil || whereVal == starlark.None {
+		return "", nil, nil
+	}
+
+	// Handle string case - just the clause, no params
+	if str, ok := whereVal.(starlark.String); ok {
+		return parseWhereClauseString(str)
+	}
+
+	// Handle sequence case
+	if seq, ok := whereVal.(starlark.Sequence); ok {
+		return parseWhereClauseSequence(seq)
+	}
+
+	return "", nil, fmt.Errorf("where must be a string or sequence, got %s", whereVal.Type())
+}
+
 // selectRecords selects records from a table.
-func (m *databaseMethods) selectRecords(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
-	var columns *starlark.List
-	var whereClause string
-	var whereParams starlark.Sequence
+	var columnsVal starlark.Value
+	var whereVal starlark.Value
 	var orderBy string
 	var limit int
 	var offset int
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
-		"columns", &columns,
-		"where?", &whereClause,
-		"params?", &whereParams,
+		"columns?", &columnsVal,
+		"where?", &whereVal,
 		"order_by?", &orderBy,
 		"limit?", &limit,
 		"offset?", &offset); err != nil {
@@ -489,16 +567,9 @@ func (m *databaseMethods) selectRecords(thread *starlark.Thread, fn *starlark.Bu
 	}
 
 	// Extract column names
-	var colNames []string
-	iter := columns.Iterate()
-	defer iter.Done()
-	var val starlark.Value
-	for iter.Next(&val) {
-		colName, ok := val.(starlark.String)
-		if !ok {
-			return nil, fmt.Errorf("column name must be a string")
-		}
-		colNames = append(colNames, string(colName))
+	colNames, err := extractColumns(columnsVal)
+	if err != nil {
+		return nil, err
 	}
 
 	// Use * if no columns specified
@@ -511,6 +582,12 @@ func (m *databaseMethods) selectRecords(thread *starlark.Thread, fn *starlark.Bu
 
 	// Build SQL statement
 	sql := fmt.Sprintf("SELECT %s FROM %s", colClause, quoteName(table))
+
+	// Parse where clause and parameters
+	whereClause, params, err := parseWhereClause(whereVal)
+	if err != nil {
+		return nil, err
+	}
 
 	// Add WHERE clause if provided
 	if whereClause != "" {
@@ -530,21 +607,6 @@ func (m *databaseMethods) selectRecords(thread *starlark.Thread, fn *starlark.Bu
 	// Add OFFSET clause if provided
 	if offset > 0 {
 		sql += fmt.Sprintf(" OFFSET %d", offset)
-	}
-
-	// Extract parameters
-	var params []interface{}
-	if whereParams != nil {
-		iter := whereParams.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			sqlVal, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, sqlVal)
-		}
 	}
 
 	// Execute the query
@@ -606,44 +668,33 @@ func (m *databaseMethods) selectRecords(thread *starlark.Thread, fn *starlark.Bu
 }
 
 // count counts records in a table.
-func (m *databaseMethods) count(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (m *databaseMethods) count(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
-	var whereClause string
-	var whereParams starlark.Sequence
+	var whereVal starlark.Value
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
-		"where?", &whereClause,
-		"params?", &whereParams); err != nil {
+		"where?", &whereVal); err != nil {
 		return nil, err
 	}
 
 	// Build SQL statement
 	sql := fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteName(table))
 
+	// Parse where clause and parameters
+	whereClause, params, err := parseWhereClause(whereVal)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add WHERE clause if provided
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
 	}
 
-	// Extract parameters
-	var params []interface{}
-	if whereParams != nil {
-		iter := whereParams.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			sqlVal, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, sqlVal)
-		}
-	}
-
 	// Execute the query
 	var count int64
-	err := m.db.db.QueryRow(sql, params...).Scan(&count)
-	if err != nil {
+	if err := m.db.db.QueryRow(sql, params...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("failed to count records: %w", err)
 	}
 
