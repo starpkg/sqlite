@@ -22,13 +22,18 @@ const (
 	ModuleName = "sqlite"
 
 	// Default configuration values
-	defaultTimeout     = 30.0
-	defaultBusyTimeout = 5.0
-	defaultDatabase    = ":memory:"
-	defaultForeignKeys = true
-	defaultJournalMode = "WAL"
-	defaultSynchronous = "NORMAL"
-	defaultCacheSize   = 2000
+	defaultTimeout     = 30.0       // Default connection timeout in seconds.
+	defaultBusyTimeout = 5.0        // Default busy timeout in seconds. SQLite will wait for this duration if the database is locked.
+	defaultDatabase    = ":memory:" // Default database path. Use ":memory:" for an in-memory database, or provide a file path.
+	defaultForeignKeys = true       // Default for foreign key constraints. Set to true to enable, false to disable. Enabling enforces referential integrity.
+	defaultJournalMode = "DELETE"   // Default journal mode. "DELETE" uses a rollback journal and removes journal files on commit.
+	//   Other options: "WAL" (Write-Ahead Logging, good for concurrency), "MEMORY", "OFF", "TRUNCATE", "PERSIST".
+	//   "DELETE" is often paired with SYNCHRONOUS=FULL for data safety.
+	defaultSynchronous = "FULL" // Default synchronous mode. "FULL" ensures all data is written to disk before continuing, providing maximum safety.
+	//   Other options: "NORMAL" (safer with WAL, faster than FULL), "OFF" (fastest but less safe).
+	defaultCacheSize = -2000 // Default cache size. A negative value (e.g., -2000) instructs SQLite to use its
+	//   default page cache size (typically 2000 pages, e.g., 8MB if page size is 4KB).
+	//   A positive value sets the cache size in number of pages. 0 means no cache. The TEMP database has a default suggested cache size of 0 pages.
 )
 
 // Configuration key constants
