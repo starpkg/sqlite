@@ -173,13 +173,17 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(database string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
-	// Prepare connection string
-	connStr := database
-
+func openDatabase(connStr string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
 	// Open database connection
 	db, err := sql.Open("sqlite", connStr)
 	if err != nil {
+		return nil, err
+	}
+
+	// Verify database connection with Ping
+	// This will catch database file accessibility issues early
+	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, err
 	}
 
