@@ -80,7 +80,7 @@ def main():
                 row["name"], row["price"]))
     
     # Verify the row count
-    count = db.count("products", "")
+    count = db.count("products")
     if count != 1:
         fail("Expected 1 product, found {}".format(count))
     
@@ -316,13 +316,13 @@ def main():
         fail("Expected 5 total employees, found {}".format(total_count))
     
     # Count employees by department
-    eng_count = db.count("employees", "department = ?", ["Engineering"])
+    eng_count = db.count("employees", ["department = ?", "Engineering"])
     print("Engineering employees: {}".format(eng_count))
     if eng_count != 3:
         fail("Expected 3 Engineering employees, found {}".format(eng_count))
     
     # Select all employees from a specific department
-    engineers = db.select("employees", ["name", "salary"], "department = ? ORDER BY salary DESC", ["Engineering"])
+    engineers = db.select("employees", ["name", "salary"], ["department = ?", "Engineering"], order_by="salary DESC")
     print("Engineering team:")
     
     # Verify engineers are returned in correct order (by descending salary)
@@ -340,7 +340,7 @@ def main():
             fail("Expected salary {} to be {}, got {}".format(i, expected_salaries[i], eng["salary"]))
     
     # Update records
-    updated_rows = db.update("employees", {"salary": 95000}, "name = ?", ["Bob Johnson"])
+    updated_rows = db.update("employees", {"salary": 95000}, ["name = ?", "Bob Johnson"])
     if updated_rows != 1:
         fail("Expected to update 1 row, updated {}".format(updated_rows))
     
@@ -376,7 +376,7 @@ def main():
         print("  {} ({})".format(col["name"], col["type"]))
     
     # Delete a record
-    deleted_rows = db.delete("employees", "name = ?", ["Alice Williams"])
+    deleted_rows = db.delete("employees", ["name = ?", "Alice Williams"])
     if deleted_rows != 1:
         fail("Expected to delete 1 row, deleted {}".format(deleted_rows))
     
@@ -801,7 +801,7 @@ def main():
     # Update the record
     db.update("complex_data", 
         {"metadata": updated_metadata, "tags": updated_tags}, 
-        "id = ?", [1]
+        ["id = ?", 1]
     )
     
     # Retrieve updated data
@@ -1132,7 +1132,7 @@ def main():
     
     # Update binary data
     updated_data = bytes([255, 255, 255, 0, 0, 0])
-    db.update("binary_data", {"data": updated_data}, "id = ?", [id1])
+    db.update("binary_data", {"data": updated_data}, ["id = ?", id1])
     
     # Verify update
     updated_row = db.query_one("SELECT * FROM binary_data WHERE id = ?", [id1])

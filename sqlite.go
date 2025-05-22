@@ -11,6 +11,7 @@ import (
 	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	startime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
 )
@@ -21,24 +22,29 @@ const (
 	ModuleName = "sqlite"
 
 	// Default configuration values
-	defaultTimeout     = 30.0
-	defaultBusyTimeout = 5.0
-	defaultDatabase    = ":memory:"
-	defaultForeignKeys = true
-	defaultJournalMode = "WAL"
-	defaultSynchronous = "NORMAL"
-	defaultCacheSize   = 2000
+	defaultTimeout     = 30.0       // Default connection timeout in seconds.
+	defaultBusyTimeout = 5.0        // Default busy timeout in seconds. SQLite will wait for this duration if the database is locked.
+	defaultDatabase    = ":memory:" // Default database path. Use ":memory:" for an in-memory database, or provide a file path.
+	defaultForeignKeys = true       // Default for foreign key constraints. Set to true to enable, false to disable. Enabling enforces referential integrity.
+	defaultJournalMode = "DELETE"   // Default journal mode. "DELETE" uses a rollback journal and removes journal files on commit.
+	//   Other options: "WAL" (Write-Ahead Logging, good for concurrency), "MEMORY", "OFF", "TRUNCATE", "PERSIST".
+	//   "DELETE" is often paired with SYNCHRONOUS=FULL for data safety.
+	defaultSynchronous = "FULL" // Default synchronous mode. "FULL" ensures all data is written to disk before continuing, providing maximum safety.
+	//   Other options: "NORMAL" (safer with WAL, faster than FULL), "OFF" (fastest but less safe).
+	defaultCacheSize = -2000 // Default cache size. A negative value (e.g., -2000) instructs SQLite to use its
+	//   default page cache size (typically 2000 pages, e.g., 8MB if page size is 4KB).
+	//   A positive value sets the cache size in number of pages. 0 means no cache. The TEMP database has a default suggested cache size of 0 pages.
 )
 
 // Configuration key constants
 const (
 	configKeyDatabase    = "database"
 	configKeyTimeout     = "timeout"
+	configKeyBusyTimeout = "busy_timeout"
 	configKeyForeignKeys = "foreign_keys"
 	configKeyJournalMode = "journal_mode"
 	configKeySynchronous = "synchronous"
 	configKeyCacheSize   = "cache_size"
-	configKeyBusyTimeout = "busy_timeout"
 )
 
 // Module wraps the ConfigurableModule with specific functionality for SQLite operations.
@@ -167,13 +173,17 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(database string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
-	// Prepare connection string
-	connStr := database
-
+func openDatabase(connStr string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
 	// Open database connection
 	db, err := sql.Open("sqlite", connStr)
 	if err != nil {
+		return nil, err
+	}
+
+	// Verify database connection with Ping
+	// This will catch database file accessibility issues early
+	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, err
 	}
 
@@ -230,6 +240,8 @@ func starlarkToSQLiteValue(v starlark.Value) (interface{}, error) {
 		return string(v), nil
 	case starlark.Bytes:
 		return []byte(v), nil
+	case startime.Time:
+		return time.Time(v), nil
 	case *starlark.Dict, *starlark.List:
 		// Convert to JSON
 		return dataconv.MarshalStarlarkJSON(v, 0)
@@ -257,6 +269,8 @@ func sqliteToStarlarkValue(v interface{}) (starlark.Value, error) {
 		return starlark.String(v), nil
 	case []byte:
 		return starlark.Bytes(v), nil
+	case time.Time:
+		return startime.Time(v), nil
 	default:
 		return nil, fmt.Errorf("unsupported SQLite type for Starlark: %T", v)
 	}
