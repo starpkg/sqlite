@@ -80,7 +80,7 @@ def main():
                 row["name"], row["price"]))
     
     # Verify the row count
-    count = db.count("products", "")
+    count = db.count("products")
     if count != 1:
         fail("Expected 1 product, found {}".format(count))
     

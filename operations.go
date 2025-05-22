@@ -451,100 +451,103 @@ func (m *databaseMethods) delete(_ *starlark.Thread, fn *starlark.Builtin, args 
 }
 
 // extractColumns extracts column names from a Starlark value,
-// which can be either a string or a sequence of strings.
+// which can be either a string, bytes, or a sequence of strings/bytes.
 func extractColumns(columnsVal starlark.Value) ([]string, error) {
 	var colNames []string
 
-	// Handle nil case
-	if columnsVal == nil || columnsVal == starlark.None {
+	switch val := columnsVal.(type) {
+	case nil, starlark.NoneType:
+		// Return empty list for nil or None
 		return colNames, nil
-	}
 
-	// Handle string case
-	if str, ok := columnsVal.(starlark.String); ok {
-		colNames = append(colNames, string(str))
+	case starlark.String:
+		// Handle single string case
+		colNames = append(colNames, string(val))
 		return colNames, nil
-	}
 
-	// Handle sequence case
-	if seq, ok := columnsVal.(starlark.Sequence); ok {
-		iter := seq.Iterate()
+	case starlark.Bytes:
+		// Handle single bytes case
+		colNames = append(colNames, string(val))
+		return colNames, nil
+
+	case starlark.Sequence:
+		// Handle sequence case
+		iter := val.Iterate()
 		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			colName, ok := val.(starlark.String)
-			if !ok {
-				return nil, fmt.Errorf("column name must be a string, got %s", val.Type())
+		var item starlark.Value
+		for iter.Next(&item) {
+			switch v := item.(type) {
+			case starlark.String:
+				colNames = append(colNames, string(v))
+			case starlark.Bytes:
+				colNames = append(colNames, string(v))
+			default:
+				return nil, fmt.Errorf("column name must be a string or bytes, got %s", item.Type())
 			}
-			colNames = append(colNames, string(colName))
 		}
 		return colNames, nil
 	}
 
-	return nil, fmt.Errorf("columns must be a string or sequence of strings, got %s", columnsVal.Type())
-}
-
-// parseWhereClauseString extracts the where clause from a string value
-func parseWhereClauseString(str starlark.String) (string, []interface{}, error) {
-	whereClause := string(str)
-	return whereClause, nil, nil
-}
-
-// parseWhereClauseSequence extracts the where clause and parameters from a sequence value
-func parseWhereClauseSequence(seq starlark.Sequence) (string, []interface{}, error) {
-	if seq.Len() == 0 {
-		return "", nil, nil
-	}
-
-	var params []interface{}
-
-	// Get the first item as the clause
-	var clause starlark.Value
-	iter := seq.Iterate()
-	defer iter.Done()
-	if !iter.Next(&clause) {
-		return "", nil, nil
-	}
-
-	// Convert to string
-	str, ok := clause.(starlark.String)
-	if !ok {
-		return "", nil, fmt.Errorf("where clause must be a string, got %s", clause.Type())
-	}
-	whereClause := string(str)
-
-	// Get remaining items as parameters
-	for iter.Next(&clause) {
-		sqlVal, err := starlarkToSQLiteValue(clause)
-		if err != nil {
-			return "", nil, err
-		}
-		params = append(params, sqlVal)
-	}
-
-	return whereClause, params, nil
+	return nil, fmt.Errorf("columns must be a string, bytes, or sequence of strings/bytes, got %s", columnsVal.Type())
 }
 
 // parseWhereClause parses a where clause from a Starlark value.
-// The value can be a string (just the clause) or a sequence where the first
+// The value can be a string or bytes (just the clause) or a sequence where the first
 // element is the clause and the rest are parameters.
 func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
-	// Handle nil case
-	if whereVal == nil || whereVal == starlark.None {
+	switch val := whereVal.(type) {
+	case nil, starlark.NoneType:
+		// Handle nil case
 		return "", nil, nil
-	}
 
-	// Handle string case - just the clause, no params
-	if str, ok := whereVal.(starlark.String); ok {
-		return parseWhereClauseString(str)
-	}
+	case starlark.String:
+		// Handle string case - just the clause, no params
+		return string(val), nil, nil
 
-	// Handle sequence case
-	if seq, ok := whereVal.(starlark.Sequence); ok {
-		return parseWhereClauseSequence(seq)
-	}
+	case starlark.Bytes:
+		// Handle bytes case - just the clause, no params
+		return string(val), nil, nil
 
-	return "", nil, fmt.Errorf("where must be a string or sequence, got %s", whereVal.Type())
+	case starlark.Sequence:
+		// Handle sequence case
+		if val.Len() == 0 {
+			return "", nil, nil
+		}
+
+		// Get the first item as the clause
+		var clause starlark.Value
+		iter := val.Iterate()
+		defer iter.Done()
+		if !iter.Next(&clause) {
+			return "", nil, nil
+		}
+
+		// Convert first item to string
+		var whereClause string
+		switch c := clause.(type) {
+		case starlark.String:
+			whereClause = string(c)
+		case starlark.Bytes:
+			whereClause = string(c)
+		default:
+			return "", nil, fmt.Errorf("where clause must be a string or bytes, got %s", clause.Type())
+		}
+
+		// Get remaining items as parameters
+		var params []interface{}
+		for iter.Next(&clause) {
+			sqlVal, err := starlarkToSQLiteValue(clause)
+			if err != nil {
+				return "", nil, err
+			}
+			params = append(params, sqlVal)
+		}
+
+		return whereClause, params, nil
+	default:
+		// Handle invalid type
+		return "", nil, fmt.Errorf("where must be a string, bytes, or sequence, got %s", whereVal.Type())
+	}
 }
 
 // selectRecords selects records from a table.
@@ -577,7 +580,12 @@ func (m *databaseMethods) selectRecords(_ *starlark.Thread, fn *starlark.Builtin
 	if len(colNames) == 0 || (len(colNames) == 1 && colNames[0] == "*") {
 		colClause = "*"
 	} else {
-		colClause = strings.Join(colNames, ", ")
+		// Quote column names for security
+		quotedColumns := make([]string, len(colNames))
+		for i, col := range colNames {
+			quotedColumns[i] = quoteName(col)
+		}
+		colClause = strings.Join(quotedColumns, ", ")
 	}
 
 	// Build SQL statement
