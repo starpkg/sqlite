@@ -8,7 +8,7 @@ import (
 )
 
 // createTable creates a new table with the specified columns.
-func (m *databaseMethods) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columns *starlark.Dict
 
@@ -36,7 +36,7 @@ func (m *databaseMethods) createTable(_ *starlark.Thread, fn *starlark.Builtin, 
 	sql := fmt.Sprintf("CREATE TABLE %s (%s)", quoteName(table), strings.Join(columnDefs, ", "))
 
 	// Execute the statement
-	_, err := m.db.db.Exec(sql)
+	_, err := db.db.Exec(sql)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
@@ -45,7 +45,7 @@ func (m *databaseMethods) createTable(_ *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // dropTable drops a table.
-func (m *databaseMethods) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -57,7 +57,7 @@ func (m *databaseMethods) dropTable(_ *starlark.Thread, fn *starlark.Builtin, ar
 	sql := fmt.Sprintf("DROP TABLE %s", quoteName(table))
 
 	// Execute the statement
-	_, err := m.db.db.Exec(sql)
+	_, err := db.db.Exec(sql)
 	if err != nil {
 		return nil, fmt.Errorf("failed to drop table: %w", err)
 	}
@@ -66,7 +66,7 @@ func (m *databaseMethods) dropTable(_ *starlark.Thread, fn *starlark.Builtin, ar
 }
 
 // truncateTable removes all rows from a table.
-func (m *databaseMethods) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -78,7 +78,7 @@ func (m *databaseMethods) truncateTable(_ *starlark.Thread, fn *starlark.Builtin
 	sql := fmt.Sprintf("DELETE FROM %s", quoteName(table))
 
 	// Execute the statement
-	result, err := m.db.db.Exec(sql)
+	result, err := db.db.Exec(sql)
 	if err != nil {
 		return nil, fmt.Errorf("failed to truncate table: %w", err)
 	}
@@ -93,7 +93,7 @@ func (m *databaseMethods) truncateTable(_ *starlark.Thread, fn *starlark.Builtin
 }
 
 // insert inserts a record into a table.
-func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) insert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 
@@ -133,7 +133,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		strings.Join(placeholders, ", "))
 
 	// Execute the statement
-	result, err := m.db.db.Exec(sql, params...)
+	result, err := db.db.Exec(sql, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert record: %w", err)
 	}
@@ -153,7 +153,7 @@ func (m *databaseMethods) insert(_ *starlark.Thread, fn *starlark.Builtin, args 
 }
 
 // insertMany inserts multiple records into a table.
-func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var valuesList *starlark.List
 
@@ -190,7 +190,7 @@ func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Begin transaction
-	tx, err := m.db.db.Begin()
+	tx, err := db.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -266,7 +266,7 @@ func (m *databaseMethods) insertMany(_ *starlark.Thread, fn *starlark.Builtin, a
 }
 
 // update updates records in a table.
-func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) update(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 	var whereVal starlark.Value
@@ -318,7 +318,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Execute the statement
-	result, err := m.db.db.Exec(sql, params...)
+	result, err := db.db.Exec(sql, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update records: %w", err)
 	}
@@ -333,7 +333,7 @@ func (m *databaseMethods) update(_ *starlark.Thread, fn *starlark.Builtin, args 
 }
 
 // upsert inserts a record if it doesn't exist, or updates it if it does.
-func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 	var keyColumnsVal starlark.Value
@@ -392,7 +392,7 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 		strings.Join(updateClauses, ", "))
 
 	// Execute the statement
-	result, err := m.db.db.Exec(sql, params...)
+	result, err := db.db.Exec(sql, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert record: %w", err)
 	}
@@ -407,7 +407,7 @@ func (m *databaseMethods) upsert(_ *starlark.Thread, fn *starlark.Builtin, args 
 }
 
 // delete deletes records from a table.
-func (m *databaseMethods) delete(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) delete(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var whereVal starlark.Value
 
@@ -432,7 +432,7 @@ func (m *databaseMethods) delete(_ *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Execute the statement
-	result, err := m.db.db.Exec(sql, params...)
+	result, err := db.db.Exec(sql, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete records: %w", err)
 	}
@@ -556,7 +556,7 @@ func quoteNameList(names []string) []string {
 }
 
 // selectRecords selects records from a table.
-func (m *databaseMethods) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columnsVal starlark.Value
 	var whereVal starlark.Value
@@ -623,7 +623,7 @@ func (m *databaseMethods) selectRecords(_ *starlark.Thread, fn *starlark.Builtin
 	}
 
 	// Execute the query
-	rows, err := m.db.db.Query(sql, params...)
+	rows, err := db.db.Query(sql, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select records: %w", err)
 	}
@@ -681,7 +681,7 @@ func (m *databaseMethods) selectRecords(_ *starlark.Thread, fn *starlark.Builtin
 }
 
 // count counts records in a table.
-func (m *databaseMethods) count(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) count(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var whereVal starlark.Value
 
@@ -707,7 +707,7 @@ func (m *databaseMethods) count(_ *starlark.Thread, fn *starlark.Builtin, args s
 
 	// Execute the query
 	var count int64
-	if err := m.db.db.QueryRow(sql, params...).Scan(&count); err != nil {
+	if err := db.db.QueryRow(sql, params...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("failed to count records: %w", err)
 	}
 
