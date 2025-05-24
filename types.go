@@ -110,15 +110,6 @@ func quoteNames(names []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// quoteNameList quotes a list of names.
-func quoteNameList(names []string) []string {
-	quotedNames := make([]string, len(names))
-	for i, name := range names {
-		quotedNames[i] = quoteName(name)
-	}
-	return quotedNames
-}
-
 // boolToInt converts a boolean value to an integer (1 for true, 0 for false).
 func boolToInt(b bool) int {
 	if b {

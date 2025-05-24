@@ -141,57 +141,9 @@ func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args st
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer rows.Close()
 
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Convert result rows to a Starlark list of dicts
-	resultList := &starlark.List{}
-	for rows.Next() {
-		// Prepare scan targets
-		scanTargets := make([]interface{}, len(cols))
-		for i := range scanTargets {
-			var v interface{}
-			scanTargets[i] = &v
-		}
-
-		// Scan row data
-		if err := rows.Scan(scanTargets...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Create row dict
-		rowDict := starlark.NewDict(len(cols))
-		for i, col := range cols {
-			// Get value from scan target
-			val := *(scanTargets[i].(*interface{}))
-			// Convert to Starlark value
-			starVal, err := sqliteToStarlarkValue(val)
-			if err != nil {
-				return nil, err
-			}
-			// Add to dict
-			if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-				return nil, err
-			}
-		}
-
-		// Append to result list
-		if err := resultList.Append(rowDict); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return resultList, nil
+	// Use shared utility to process rows
+	return processQueryRows(rows)
 }
 
 // queryOne executes a SQL query and returns the first row, or None if no rows are returned.
@@ -216,53 +168,9 @@ func (db *database) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer rows.Close()
 
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Check if we have a row
-	if !rows.Next() {
-		return starlark.None, nil
-	}
-
-	// Prepare scan targets
-	scanTargets := make([]interface{}, len(cols))
-	for i := range scanTargets {
-		var v interface{}
-		scanTargets[i] = &v
-	}
-
-	// Scan row data
-	if err := rows.Scan(scanTargets...); err != nil {
-		return nil, fmt.Errorf("failed to scan row: %w", err)
-	}
-
-	// Create row dict
-	rowDict := starlark.NewDict(len(cols))
-	for i, col := range cols {
-		// Get value from scan target
-		val := *(scanTargets[i].(*interface{}))
-		// Convert to Starlark value
-		starVal, err := sqliteToStarlarkValue(val)
-		if err != nil {
-			return nil, err
-		}
-		// Add to dict
-		if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return rowDict, nil
+	// Use shared utility to process first row
+	return processQueryOneRow(rows)
 }
 
 // begin starts a new transaction.
