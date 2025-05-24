@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
@@ -462,28 +461,6 @@ func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	return resultList, nil
-}
-
-// quoteName quotes a SQL identifier (table or column name).
-func quoteName(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-// quoteNames quotes a list of SQL identifiers.
-func quoteNames(names []string) string {
-	quoted := make([]string, len(names))
-	for i, name := range names {
-		quoted[i] = quoteName(name)
-	}
-	return strings.Join(quoted, ", ")
-}
-
-// boolToInt converts a boolean value to an integer (1 for true, 0 for false).
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // tableExists checks if a table exists.

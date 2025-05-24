@@ -546,15 +546,6 @@ func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
 	}
 }
 
-// quoteNameList quotes a list of names.
-func quoteNameList(names []string) []string {
-	quotedNames := make([]string, len(names))
-	for i, name := range names {
-		quotedNames[i] = quoteName(name)
-	}
-	return quotedNames
-}
-
 // selectRecords selects records from a table.
 func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string

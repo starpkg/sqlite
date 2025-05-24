@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1set/starlet/dataconv"
@@ -93,4 +94,35 @@ func newSQLQuery(query string, params starlark.Sequence) (*sqlQuery, error) {
 		query:  query,
 		params: goParams,
 	}, nil
+}
+
+// quoteName quotes a SQL identifier (table or column name).
+func quoteName(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// quoteNames quotes a list of SQL identifiers.
+func quoteNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = quoteName(name)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// quoteNameList quotes a list of names.
+func quoteNameList(names []string) []string {
+	quotedNames := make([]string, len(names))
+	for i, name := range names {
+		quotedNames[i] = quoteName(name)
+	}
+	return quotedNames
+}
+
+// boolToInt converts a boolean value to an integer (1 for true, 0 for false).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
