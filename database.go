@@ -5,65 +5,58 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
 
 // database represents a SQLite database connection.
+// All database operations are now performed via methods on *database.
 type database struct {
 	db *sql.DB
-}
-
-// databaseMethods defines methods that can be called on the database object.
-type databaseMethods struct {
-	db *database
 }
 
 // newDatabaseInstance creates a new Starlark database instance.
 func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
 	dbi := &database{db: db}
-	methods := &databaseMethods{db: dbi}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
-		"close":          starlark.NewBuiltin("close", methods.close),
-		"execute":        starlark.NewBuiltin("execute", methods.execute),
-		"query":          starlark.NewBuiltin("query", methods.query),
-		"query_one":      starlark.NewBuiltin("query_one", methods.queryOne),
-		"prepare":        starlark.NewBuiltin("prepare", methods.prepare),
-		"prepare_query":  starlark.NewBuiltin("prepare_query", methods.prepareQuery),
-		"begin":          starlark.NewBuiltin("begin", methods.begin),
-		"create_table":   starlark.NewBuiltin("create_table", methods.createTable),
-		"drop_table":     starlark.NewBuiltin("drop_table", methods.dropTable),
-		"table_exists":   starlark.NewBuiltin("table_exists", methods.tableExists),
-		"truncate_table": starlark.NewBuiltin("truncate_table", methods.truncateTable),
-		"insert":         starlark.NewBuiltin("insert", methods.insert),
-		"insert_many":    starlark.NewBuiltin("insert_many", methods.insertMany),
-		"update":         starlark.NewBuiltin("update", methods.update),
-		"upsert":         starlark.NewBuiltin("upsert", methods.upsert),
-		"delete":         starlark.NewBuiltin("delete", methods.delete),
-		"select":         starlark.NewBuiltin("select", methods.selectRecords),
-		"count":          starlark.NewBuiltin("count", methods.count),
-		"attach":         starlark.NewBuiltin("attach", methods.attach),
-		"detach":         starlark.NewBuiltin("detach", methods.detach),
-		"tables":         starlark.NewBuiltin("tables", methods.tables),
-		"table_info":     starlark.NewBuiltin("table_info", methods.tableInfo),
-		"indices":        starlark.NewBuiltin("indices", methods.indices),
+		"close":          starlark.NewBuiltin("close", dbi.close),
+		"execute":        starlark.NewBuiltin("execute", dbi.execute),
+		"query":          starlark.NewBuiltin("query", dbi.query),
+		"query_one":      starlark.NewBuiltin("query_one", dbi.queryOne),
+		"prepare":        starlark.NewBuiltin("prepare", dbi.prepare),
+		"prepare_query":  starlark.NewBuiltin("prepare_query", dbi.prepareQuery),
+		"begin":          starlark.NewBuiltin("begin", dbi.begin),
+		"create_table":   starlark.NewBuiltin("create_table", dbi.createTable),
+		"drop_table":     starlark.NewBuiltin("drop_table", dbi.dropTable),
+		"table_exists":   starlark.NewBuiltin("table_exists", dbi.tableExists),
+		"truncate_table": starlark.NewBuiltin("truncate_table", dbi.truncateTable),
+		"insert":         starlark.NewBuiltin("insert", dbi.insert),
+		"insert_many":    starlark.NewBuiltin("insert_many", dbi.insertMany),
+		"update":         starlark.NewBuiltin("update", dbi.update),
+		"upsert":         starlark.NewBuiltin("upsert", dbi.upsert),
+		"delete":         starlark.NewBuiltin("delete", dbi.delete),
+		"select":         starlark.NewBuiltin("select", dbi.selectRecords),
+		"count":          starlark.NewBuiltin("count", dbi.count),
+		"attach":         starlark.NewBuiltin("attach", dbi.attach),
+		"detach":         starlark.NewBuiltin("detach", dbi.detach),
+		"tables":         starlark.NewBuiltin("tables", dbi.tables),
+		"table_info":     starlark.NewBuiltin("table_info", dbi.tableInfo),
+		"indices":        starlark.NewBuiltin("indices", dbi.indices),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "database",
-		Members: dict,
-	}
+	return dataconv.MakeModule("database", dict)
 }
 
 // close closes the database connection.
-func (m *databaseMethods) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
-	if err := m.db.db.Close(); err != nil {
+	if err := db.db.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close database: %w", err)
 	}
 
@@ -71,7 +64,7 @@ func (m *databaseMethods) close(thread *starlark.Thread, fn *starlark.Builtin, a
 }
 
 // execute executes a SQL statement with optional parameters.
-func (m *databaseMethods) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -88,7 +81,7 @@ func (m *databaseMethods) execute(thread *starlark.Thread, fn *starlark.Builtin,
 	}
 
 	// Execute the query
-	result, err := m.db.db.Exec(sqlQuery.query, sqlQuery.params...)
+	result, err := db.db.Exec(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -103,7 +96,7 @@ func (m *databaseMethods) execute(thread *starlark.Thread, fn *starlark.Builtin,
 }
 
 // query executes a SQL query with optional parameters and returns the results.
-func (m *databaseMethods) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -120,7 +113,7 @@ func (m *databaseMethods) query(thread *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Execute the query
-	rows, err := m.db.db.Query(sqlQuery.query, sqlQuery.params...)
+	rows, err := db.db.Query(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -178,7 +171,7 @@ func (m *databaseMethods) query(thread *starlark.Thread, fn *starlark.Builtin, a
 }
 
 // queryOne executes a SQL query and returns the first row, or None if no rows are returned.
-func (m *databaseMethods) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -195,7 +188,7 @@ func (m *databaseMethods) queryOne(thread *starlark.Thread, fn *starlark.Builtin
 	}
 
 	// Execute the query
-	rows, err := m.db.db.Query(sqlQuery.query, sqlQuery.params...)
+	rows, err := db.db.Query(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -249,13 +242,13 @@ func (m *databaseMethods) queryOne(thread *starlark.Thread, fn *starlark.Builtin
 }
 
 // begin starts a new transaction.
-func (m *databaseMethods) begin(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) begin(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
 	// Begin transaction
-	tx, err := m.db.db.Begin()
+	tx, err := db.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -265,7 +258,7 @@ func (m *databaseMethods) begin(thread *starlark.Thread, fn *starlark.Builtin, a
 }
 
 // attach attaches another database with an alias.
-func (m *databaseMethods) attach(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) attach(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var database string
 	var alias string
 
@@ -277,7 +270,7 @@ func (m *databaseMethods) attach(thread *starlark.Thread, fn *starlark.Builtin, 
 
 	// Execute ATTACH DATABASE statement
 	query := fmt.Sprintf("ATTACH DATABASE ? AS %s", quoteName(alias))
-	_, err := m.db.db.Exec(query, database)
+	_, err := db.db.Exec(query, database)
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach database: %w", err)
 	}
@@ -286,7 +279,7 @@ func (m *databaseMethods) attach(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // detach detaches a database.
-func (m *databaseMethods) detach(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) detach(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var alias string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -296,7 +289,7 @@ func (m *databaseMethods) detach(thread *starlark.Thread, fn *starlark.Builtin, 
 
 	// Execute DETACH DATABASE statement
 	query := fmt.Sprintf("DETACH DATABASE %s", quoteName(alias))
-	_, err := m.db.db.Exec(query)
+	_, err := db.db.Exec(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detach database: %w", err)
 	}
@@ -305,13 +298,13 @@ func (m *databaseMethods) detach(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // tables returns a list of tables in the database.
-func (m *databaseMethods) tables(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) tables(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
 	// Query tables
-	rows, err := m.db.db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+	rows, err := db.db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tables: %w", err)
 	}
@@ -338,7 +331,7 @@ func (m *databaseMethods) tables(thread *starlark.Thread, fn *starlark.Builtin, 
 }
 
 // tableInfo returns information about a table's columns.
-func (m *databaseMethods) tableInfo(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) tableInfo(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -347,7 +340,7 @@ func (m *databaseMethods) tableInfo(thread *starlark.Thread, fn *starlark.Builti
 	}
 
 	// Query table info
-	rows, err := m.db.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteName(table)))
+	rows, err := db.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteName(table)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query table info: %w", err)
 	}
@@ -403,7 +396,7 @@ func (m *databaseMethods) tableInfo(thread *starlark.Thread, fn *starlark.Builti
 }
 
 // indices returns a list of indices for a table.
-func (m *databaseMethods) indices(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -412,7 +405,7 @@ func (m *databaseMethods) indices(thread *starlark.Thread, fn *starlark.Builtin,
 	}
 
 	// Query indices
-	rows, err := m.db.db.Query("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
+	rows, err := db.db.Query("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query indices: %w", err)
 	}
@@ -461,7 +454,7 @@ func quoteNames(names []string) string {
 }
 
 // tableExists checks if a table exists.
-func (m *databaseMethods) tableExists(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) tableExists(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -471,7 +464,7 @@ func (m *databaseMethods) tableExists(thread *starlark.Thread, fn *starlark.Buil
 
 	// Query to check if table exists
 	var count int
-	err := m.db.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
+	err := db.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if table exists: %w", err)
 	}
@@ -479,35 +472,27 @@ func (m *databaseMethods) tableExists(thread *starlark.Thread, fn *starlark.Buil
 	return starlark.Bool(count > 0), nil
 }
 
-// prepareStmt represents a prepared statement.
-type prepareStmt struct {
+// preparedStmt represents a prepared statement struct with methods
+// directly attached, providing cleaner and more idiomatic Go code.
+type preparedStmt struct {
 	stmt *sql.Stmt
-}
-
-// preparedStmtMethods defines methods for prepared statements.
-type preparedStmtMethods struct {
-	stmt *prepareStmt
 }
 
 // newPreparedStatementInstance creates a new Starlark prepared statement instance.
 func newPreparedStatementInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &prepareStmt{stmt: stmt}
-	methods := &preparedStmtMethods{stmt: ps}
+	ps := &preparedStmt{stmt: stmt}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
-		"execute": starlark.NewBuiltin("execute", methods.execute),
-		"close":   starlark.NewBuiltin("close", methods.close),
+		"execute": starlark.NewBuiltin("execute", ps.execute),
+		"close":   starlark.NewBuiltin("close", ps.close),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "prepared_statement",
-		Members: dict,
-	}
+	return dataconv.MakeModule("prepared_statement", dict)
 }
 
 // execute executes a prepared statement with parameters.
-func (m *preparedStmtMethods) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (ps *preparedStmt) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var params starlark.Sequence
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -531,7 +516,7 @@ func (m *preparedStmtMethods) execute(thread *starlark.Thread, fn *starlark.Buil
 	}
 
 	// Execute the statement
-	result, err := m.stmt.stmt.Exec(goParams...)
+	result, err := ps.stmt.Exec(goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute statement: %w", err)
 	}
@@ -546,62 +531,20 @@ func (m *preparedStmtMethods) execute(thread *starlark.Thread, fn *starlark.Buil
 }
 
 // close closes the prepared statement.
-func (m *preparedStmtMethods) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (ps *preparedStmt) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
-	if err := m.stmt.stmt.Close(); err != nil {
+	if err := ps.stmt.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close statement: %w", err)
 	}
 
 	return starlark.None, nil
 }
 
-// prepare prepares a SQL statement.
-func (m *databaseMethods) prepare(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var query string
-
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
-		"query", &query); err != nil {
-		return nil, err
-	}
-
-	// Prepare statement
-	stmt, err := m.db.db.Prepare(query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to prepare statement: %w", err)
-	}
-
-	// Create prepared statement object
-	return newPreparedStatementInstance(stmt), nil
-}
-
-// preparedQueryMethods defines methods for prepared query statements.
-type preparedQueryMethods struct {
-	stmt *prepareStmt
-}
-
-// newPreparedQueryInstance creates a new Starlark prepared query instance.
-func newPreparedQueryInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &prepareStmt{stmt: stmt}
-	methods := &preparedQueryMethods{stmt: ps}
-
-	// Create dictionary of methods
-	dict := starlark.StringDict{
-		"query":     starlark.NewBuiltin("query", methods.query),
-		"query_one": starlark.NewBuiltin("query_one", methods.queryOne),
-		"close":     starlark.NewBuiltin("close", methods.close),
-	}
-
-	return &starlarkstruct.Module{
-		Name:    "prepared_query",
-		Members: dict,
-	}
-}
-
 // query executes a prepared query with parameters.
-func (m *preparedQueryMethods) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (ps *preparedStmt) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var params starlark.Sequence
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -625,7 +568,7 @@ func (m *preparedQueryMethods) query(thread *starlark.Thread, fn *starlark.Built
 	}
 
 	// Execute the query
-	rows, err := m.stmt.stmt.Query(goParams...)
+	rows, err := ps.stmt.Query(goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -683,7 +626,7 @@ func (m *preparedQueryMethods) query(thread *starlark.Thread, fn *starlark.Built
 }
 
 // queryOne executes a prepared query and returns the first row, or None if no rows are returned.
-func (m *preparedQueryMethods) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (ps *preparedStmt) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var params starlark.Sequence
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -707,7 +650,7 @@ func (m *preparedQueryMethods) queryOne(thread *starlark.Thread, fn *starlark.Bu
 	}
 
 	// Execute the query
-	rows, err := m.stmt.stmt.Query(goParams...)
+	rows, err := ps.stmt.Query(goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -760,21 +703,8 @@ func (m *preparedQueryMethods) queryOne(thread *starlark.Thread, fn *starlark.Bu
 	return rowDict, nil
 }
 
-// close closes the prepared query statement.
-func (m *preparedQueryMethods) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
-		return nil, err
-	}
-
-	if err := m.stmt.stmt.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close statement: %w", err)
-	}
-
-	return starlark.None, nil
-}
-
-// prepareQuery prepares a SQL query statement.
-func (m *databaseMethods) prepareQuery(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+// prepare prepares a SQL statement.
+func (db *database) prepare(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -783,11 +713,44 @@ func (m *databaseMethods) prepareQuery(thread *starlark.Thread, fn *starlark.Bui
 	}
 
 	// Prepare statement
-	stmt, err := m.db.db.Prepare(query)
+	stmt, err := db.db.Prepare(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+
+	// Create prepared statement object
+	return newPreparedStatementInstance(stmt), nil
+}
+
+// prepareQuery prepares a SQL query statement.
+func (db *database) prepareQuery(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var query string
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
+		"query", &query); err != nil {
+		return nil, err
+	}
+
+	// Prepare statement
+	stmt, err := db.db.Prepare(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare query: %w", err)
 	}
 
 	// Create prepared query object
 	return newPreparedQueryInstance(stmt), nil
+}
+
+// newPreparedQueryInstance creates a new Starlark prepared query instance.
+func newPreparedQueryInstance(stmt *sql.Stmt) *starlarkstruct.Module {
+	ps := &preparedStmt{stmt: stmt}
+
+	// Create dictionary of methods
+	dict := starlark.StringDict{
+		"query":     starlark.NewBuiltin("query", ps.query),
+		"query_one": starlark.NewBuiltin("query_one", ps.queryOne),
+		"close":     starlark.NewBuiltin("close", ps.close),
+	}
+
+	return dataconv.MakeModule("prepared_query", dict)
 }

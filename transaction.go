@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -13,33 +14,24 @@ type transaction struct {
 	tx *sql.Tx
 }
 
-// transactionMethods defines methods for transaction objects.
-type transactionMethods struct {
-	tx *transaction
-}
-
 // newTransactionInstance creates a new Starlark transaction instance.
 func newTransactionInstance(tx *sql.Tx) *starlarkstruct.Module {
 	txObj := &transaction{tx: tx}
-	methods := &transactionMethods{tx: txObj}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
-		"execute":   starlark.NewBuiltin("execute", methods.execute),
-		"query":     starlark.NewBuiltin("query", methods.query),
-		"query_one": starlark.NewBuiltin("query_one", methods.queryOne),
-		"commit":    starlark.NewBuiltin("commit", methods.commit),
-		"rollback":  starlark.NewBuiltin("rollback", methods.rollback),
+		"execute":   starlark.NewBuiltin("execute", txObj.execute),
+		"query":     starlark.NewBuiltin("query", txObj.query),
+		"query_one": starlark.NewBuiltin("query_one", txObj.queryOne),
+		"commit":    starlark.NewBuiltin("commit", txObj.commit),
+		"rollback":  starlark.NewBuiltin("rollback", txObj.rollback),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "transaction",
-		Members: dict,
-	}
+	return dataconv.MakeModule("transaction", dict)
 }
 
 // execute executes a SQL statement within the transaction.
-func (m *transactionMethods) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (tx *transaction) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -56,7 +48,7 @@ func (m *transactionMethods) execute(thread *starlark.Thread, fn *starlark.Built
 	}
 
 	// Execute the query within transaction
-	result, err := m.tx.tx.Exec(sqlQuery.query, sqlQuery.params...)
+	result, err := tx.tx.Exec(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute transaction query: %w", err)
 	}
@@ -71,7 +63,7 @@ func (m *transactionMethods) execute(thread *starlark.Thread, fn *starlark.Built
 }
 
 // query executes a SQL query within the transaction.
-func (m *transactionMethods) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (tx *transaction) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -88,7 +80,7 @@ func (m *transactionMethods) query(thread *starlark.Thread, fn *starlark.Builtin
 	}
 
 	// Execute the query within transaction
-	rows, err := m.tx.tx.Query(sqlQuery.query, sqlQuery.params...)
+	rows, err := tx.tx.Query(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute transaction query: %w", err)
 	}
@@ -146,7 +138,7 @@ func (m *transactionMethods) query(thread *starlark.Thread, fn *starlark.Builtin
 }
 
 // queryOne executes a SQL query and returns the first row, or None if no rows are returned.
-func (m *transactionMethods) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (tx *transaction) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
 	var params starlark.Sequence
 
@@ -163,7 +155,7 @@ func (m *transactionMethods) queryOne(thread *starlark.Thread, fn *starlark.Buil
 	}
 
 	// Execute the query within transaction
-	rows, err := m.tx.tx.Query(sqlQuery.query, sqlQuery.params...)
+	rows, err := tx.tx.Query(sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute transaction query: %w", err)
 	}
@@ -217,12 +209,12 @@ func (m *transactionMethods) queryOne(thread *starlark.Thread, fn *starlark.Buil
 }
 
 // commit commits the transaction.
-func (m *transactionMethods) commit(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (tx *transaction) commit(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
-	if err := m.tx.tx.Commit(); err != nil {
+	if err := tx.tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -230,12 +222,12 @@ func (m *transactionMethods) commit(thread *starlark.Thread, fn *starlark.Builti
 }
 
 // rollback rolls back the transaction.
-func (m *transactionMethods) rollback(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (tx *transaction) rollback(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
 		return nil, err
 	}
 
-	if err := m.tx.tx.Rollback(); err != nil {
+	if err := tx.tx.Rollback(); err != nil {
 		return nil, fmt.Errorf("failed to rollback transaction: %w", err)
 	}
 
