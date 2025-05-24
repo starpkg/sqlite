@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -46,10 +47,7 @@ func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
 		"indices":        starlark.NewBuiltin("indices", dbi.indices),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "database",
-		Members: dict,
-	}
+	return dataconv.MakeModule("database", dict)
 }
 
 // close closes the database connection.
@@ -490,10 +488,7 @@ func newPreparedStatementInstance(stmt *sql.Stmt) *starlarkstruct.Module {
 		"close":   starlark.NewBuiltin("close", ps.close),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "prepared_statement",
-		Members: dict,
-	}
+	return dataconv.MakeModule("prepared_statement", dict)
 }
 
 // execute executes a prepared statement with parameters.
@@ -757,8 +752,5 @@ func newPreparedQueryInstance(stmt *sql.Stmt) *starlarkstruct.Module {
 		"close":     starlark.NewBuiltin("close", ps.close),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "prepared_query",
-		Members: dict,
-	}
+	return dataconv.MakeModule("prepared_query", dict)
 }

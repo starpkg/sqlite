@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -26,10 +27,7 @@ func newTransactionInstance(tx *sql.Tx) *starlarkstruct.Module {
 		"rollback":  starlark.NewBuiltin("rollback", txObj.rollback),
 	}
 
-	return &starlarkstruct.Module{
-		Name:    "transaction",
-		Members: dict,
-	}
+	return dataconv.MakeModule("transaction", dict)
 }
 
 // execute executes a SQL statement within the transaction.
