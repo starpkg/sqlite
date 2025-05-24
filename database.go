@@ -10,8 +10,12 @@ import (
 	"go.starlark.net/starlarkstruct"
 )
 
+// ============================================================================
+// Database Instance and Creation
+// ============================================================================
+
 // database represents a SQLite database connection.
-// All database operations are now performed via methods on *database.
+// All database operations are performed via methods on *database.
 type database struct {
 	db *sql.DB
 }
@@ -22,33 +26,50 @@ func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
-		"close":          starlark.NewBuiltin("close", dbi.close),
-		"execute":        starlark.NewBuiltin("execute", dbi.execute),
-		"query":          starlark.NewBuiltin("query", dbi.query),
-		"query_one":      starlark.NewBuiltin("query_one", dbi.queryOne),
-		"prepare":        starlark.NewBuiltin("prepare", dbi.prepare),
-		"prepare_query":  starlark.NewBuiltin("prepare_query", dbi.prepareQuery),
-		"begin":          starlark.NewBuiltin("begin", dbi.begin),
+		// Basic operations
+		"close":     starlark.NewBuiltin("close", dbi.close),
+		"execute":   starlark.NewBuiltin("execute", dbi.execute),
+		"query":     starlark.NewBuiltin("query", dbi.query),
+		"query_one": starlark.NewBuiltin("query_one", dbi.queryOne),
+
+		// Prepared statements
+		"prepare":       starlark.NewBuiltin("prepare", dbi.prepare),
+		"prepare_query": starlark.NewBuiltin("prepare_query", dbi.prepareQuery),
+
+		// Transactions
+		"begin": starlark.NewBuiltin("begin", dbi.begin),
+
+		// Schema operations
 		"create_table":   starlark.NewBuiltin("create_table", dbi.createTable),
 		"drop_table":     starlark.NewBuiltin("drop_table", dbi.dropTable),
 		"table_exists":   starlark.NewBuiltin("table_exists", dbi.tableExists),
 		"truncate_table": starlark.NewBuiltin("truncate_table", dbi.truncateTable),
-		"insert":         starlark.NewBuiltin("insert", dbi.insert),
-		"insert_many":    starlark.NewBuiltin("insert_many", dbi.insertMany),
-		"update":         starlark.NewBuiltin("update", dbi.update),
-		"upsert":         starlark.NewBuiltin("upsert", dbi.upsert),
-		"delete":         starlark.NewBuiltin("delete", dbi.delete),
-		"select":         starlark.NewBuiltin("select", dbi.selectRecords),
-		"count":          starlark.NewBuiltin("count", dbi.count),
-		"attach":         starlark.NewBuiltin("attach", dbi.attach),
-		"detach":         starlark.NewBuiltin("detach", dbi.detach),
-		"tables":         starlark.NewBuiltin("tables", dbi.tables),
-		"table_info":     starlark.NewBuiltin("table_info", dbi.tableInfo),
-		"indices":        starlark.NewBuiltin("indices", dbi.indices),
+
+		// Data operations
+		"insert":      starlark.NewBuiltin("insert", dbi.insert),
+		"insert_many": starlark.NewBuiltin("insert_many", dbi.insertMany),
+		"update":      starlark.NewBuiltin("update", dbi.update),
+		"upsert":      starlark.NewBuiltin("upsert", dbi.upsert),
+		"delete":      starlark.NewBuiltin("delete", dbi.delete),
+		"select":      starlark.NewBuiltin("select", dbi.selectRecords),
+		"count":       starlark.NewBuiltin("count", dbi.count),
+
+		// Database management
+		"attach": starlark.NewBuiltin("attach", dbi.attach),
+		"detach": starlark.NewBuiltin("detach", dbi.detach),
+
+		// Schema introspection
+		"tables":     starlark.NewBuiltin("tables", dbi.tables),
+		"table_info": starlark.NewBuiltin("table_info", dbi.tableInfo),
+		"indices":    starlark.NewBuiltin("indices", dbi.indices),
 	}
 
 	return dataconv.MakeModule("database", dict)
 }
+
+// ============================================================================
+// Basic Database Operations
+// ============================================================================
 
 // close closes the database connection.
 func (db *database) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -94,6 +115,10 @@ func (db *database) execute(thread *starlark.Thread, fn *starlark.Builtin, args 
 
 	return starlark.MakeInt64(rowsAffected), nil
 }
+
+// ============================================================================
+// Query Operations
+// ============================================================================
 
 // query executes a SQL query with optional parameters and returns the results.
 func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -451,6 +476,14 @@ func quoteNames(names []string) string {
 		quoted[i] = quoteName(name)
 	}
 	return strings.Join(quoted, ", ")
+}
+
+// boolToInt converts a boolean value to an integer (1 for true, 0 for false).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // tableExists checks if a table exists.
