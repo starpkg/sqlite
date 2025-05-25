@@ -49,10 +49,10 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	allDefinitions = append(allDefinitions, tableConstraints...)
 
 	// Create SQL statement
-	sql := fmt.Sprintf("CREATE TABLE %s (%s)", quoteName(table), strings.Join(allDefinitions, ", "))
+	query := fmt.Sprintf("CREATE TABLE %s (%s)", quoteName(table), strings.Join(allDefinitions, ", "))
 
 	// Execute the CREATE TABLE statement
-	_, err = tx.Exec(sql)
+	_, err = tx.Exec(query)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to create table: %w", err)
@@ -83,10 +83,10 @@ func (db *database) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 
 	// Create SQL statement
-	sql := fmt.Sprintf("DROP TABLE %s", quoteName(table))
+	query := fmt.Sprintf("DROP TABLE %s", quoteName(table))
 
 	// Execute the statement
-	_, err := db.db.Exec(sql)
+	_, err := db.db.Exec(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to drop table: %w", err)
 	}
@@ -104,10 +104,10 @@ func (db *database) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Create SQL statement
-	sql := fmt.Sprintf("DELETE FROM %s", quoteName(table))
+	query := fmt.Sprintf("DELETE FROM %s", quoteName(table))
 
 	// Execute the statement
-	result, err := db.db.Exec(sql)
+	result, err := db.db.Exec(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to truncate table: %w", err)
 	}
@@ -156,13 +156,13 @@ func (db *database) insert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Build SQL statement
-	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		quoteName(table),
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "))
 
 	// Execute the statement
-	result, err := db.db.Exec(sql, params...)
+	result, err := db.db.Exec(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert record: %w", err)
 	}
@@ -228,13 +228,13 @@ func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args st
 	placeholders := strings.Repeat("?, ", len(quotedColumnNames)) // Use count of columns
 	placeholders = placeholders[:len(placeholders)-2]             // Remove trailing ", "
 
-	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		quoteName(table),
 		strings.Join(quotedColumnNames, ", "), // Use quoted names for SQL
 		placeholders)
 
 	// Prepare statement
-	stmt, err := tx.Prepare(sql)
+	stmt, err := tx.Prepare(query)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to prepare statement: %w", err)
@@ -329,7 +329,7 @@ func (db *database) update(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Build SQL statement
-	sql := fmt.Sprintf("UPDATE %s SET %s",
+	query := fmt.Sprintf("UPDATE %s SET %s",
 		quoteName(table),
 		strings.Join(setClauses, ", "))
 
@@ -341,13 +341,13 @@ func (db *database) update(_ *starlark.Thread, fn *starlark.Builtin, args starla
 
 	// Add WHERE clause if provided
 	if whereClause != "" {
-		sql += " WHERE " + whereClause
+		query += " WHERE " + whereClause
 		// Add where clause parameters to the param list
 		params = append(params, whereParams...)
 	}
 
 	// Execute the statement
-	result, err := db.db.Exec(sql, params...)
+	result, err := db.db.Exec(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update records: %w", err)
 	}
@@ -413,7 +413,7 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Build SQL statement with UPSERT syntax (INSERT OR REPLACE)
-	sql := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s",
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s",
 		quoteName(table),
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
@@ -421,7 +421,7 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 		strings.Join(updateClauses, ", "))
 
 	// Execute the statement
-	result, err := db.db.Exec(sql, params...)
+	result, err := db.db.Exec(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert record: %w", err)
 	}
@@ -447,7 +447,7 @@ func (db *database) delete(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Build SQL statement
-	sql := fmt.Sprintf("DELETE FROM %s", quoteName(table))
+	query := fmt.Sprintf("DELETE FROM %s", quoteName(table))
 
 	// Parse where clause and parameters
 	whereClause, params, err := parseWhereClause(whereVal)
@@ -457,11 +457,11 @@ func (db *database) delete(_ *starlark.Thread, fn *starlark.Builtin, args starla
 
 	// Add WHERE clause if provided
 	if whereClause != "" {
-		sql += " WHERE " + whereClause
+		query += " WHERE " + whereClause
 	}
 
 	// Execute the statement
-	result, err := db.db.Exec(sql, params...)
+	result, err := db.db.Exec(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete records: %w", err)
 	}
@@ -614,7 +614,7 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Build SQL statement
-	sql := fmt.Sprintf("SELECT %s FROM %s", colClause, quoteName(table))
+	query := fmt.Sprintf("SELECT %s FROM %s", colClause, quoteName(table))
 
 	// Parse where clause and parameters
 	whereClause, params, err := parseWhereClause(whereVal)
@@ -624,26 +624,26 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 
 	// Add WHERE clause if provided
 	if whereClause != "" {
-		sql += " WHERE " + whereClause
+		query += " WHERE " + whereClause
 	}
 
 	// Add ORDER BY clause if provided
 	if orderBy != "" {
-		sql += " ORDER BY " + orderBy
+		query += " ORDER BY " + orderBy
 	}
 
 	// Add LIMIT clause if provided
 	if limit > 0 {
-		sql += fmt.Sprintf(" LIMIT %d", limit)
+		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
 
 	// Add OFFSET clause if provided
 	if offset > 0 {
-		sql += fmt.Sprintf(" OFFSET %d", offset)
+		query += fmt.Sprintf(" OFFSET %d", offset)
 	}
 
 	// Execute the query
-	rows, err := db.db.Query(sql, params...)
+	rows, err := db.db.Query(query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select records: %w", err)
 	}
@@ -664,7 +664,7 @@ func (db *database) count(_ *starlark.Thread, fn *starlark.Builtin, args starlar
 	}
 
 	// Build SQL statement
-	sql := fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteName(table))
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", quoteName(table))
 
 	// Parse where clause and parameters
 	whereClause, params, err := parseWhereClause(whereVal)
@@ -674,12 +674,12 @@ func (db *database) count(_ *starlark.Thread, fn *starlark.Builtin, args starlar
 
 	// Add WHERE clause if provided
 	if whereClause != "" {
-		sql += " WHERE " + whereClause
+		query += " WHERE " + whereClause
 	}
 
 	// Execute the query
 	var count int64
-	if err := db.db.QueryRow(sql, params...).Scan(&count); err != nil {
+	if err := db.db.QueryRow(query, params...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("failed to count records: %w", err)
 	}
 
