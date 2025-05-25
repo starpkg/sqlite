@@ -388,7 +388,7 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 		quoteName(table),
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
-		strings.Join(quoteNameList(conflictTarget), ", "),
+		quoteNames(conflictTarget),
 		strings.Join(updateClauses, ", "))
 
 	// Execute the statement
@@ -546,15 +546,6 @@ func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
 	}
 }
 
-// quoteNameList quotes a list of names.
-func quoteNameList(names []string) []string {
-	quotedNames := make([]string, len(names))
-	for i, name := range names {
-		quotedNames[i] = quoteName(name)
-	}
-	return quotedNames
-}
-
 // selectRecords selects records from a table.
 func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
@@ -627,57 +618,9 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 	if err != nil {
 		return nil, fmt.Errorf("failed to select records: %w", err)
 	}
-	defer rows.Close()
 
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Convert result rows to a Starlark list of dicts
-	resultList := &starlark.List{}
-	for rows.Next() {
-		// Prepare scan targets
-		scanTargets := make([]interface{}, len(cols))
-		for i := range scanTargets {
-			var v interface{}
-			scanTargets[i] = &v
-		}
-
-		// Scan row data
-		if err := rows.Scan(scanTargets...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Create row dict
-		rowDict := starlark.NewDict(len(cols))
-		for i, col := range cols {
-			// Get value from scan target
-			val := *(scanTargets[i].(*interface{}))
-			// Convert to Starlark value
-			starVal, err := sqliteToStarlarkValue(val)
-			if err != nil {
-				return nil, err
-			}
-			// Add to dict
-			if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-				return nil, err
-			}
-		}
-
-		// Append to result list
-		if err := resultList.Append(rowDict); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return resultList, nil
+	// Use shared utility to process rows
+	return processQueryRows(rows)
 }
 
 // count counts records in a table.

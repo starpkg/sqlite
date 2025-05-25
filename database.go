@@ -3,15 +3,18 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/1set/starlet/dataconv"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
 
+// ============================================================================
+// Database Instance and Creation
+// ============================================================================
+
 // database represents a SQLite database connection.
-// All database operations are now performed via methods on *database.
+// All database operations are performed via methods on *database.
 type database struct {
 	db *sql.DB
 }
@@ -22,33 +25,50 @@ func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
-		"close":          starlark.NewBuiltin("close", dbi.close),
-		"execute":        starlark.NewBuiltin("execute", dbi.execute),
-		"query":          starlark.NewBuiltin("query", dbi.query),
-		"query_one":      starlark.NewBuiltin("query_one", dbi.queryOne),
-		"prepare":        starlark.NewBuiltin("prepare", dbi.prepare),
-		"prepare_query":  starlark.NewBuiltin("prepare_query", dbi.prepareQuery),
-		"begin":          starlark.NewBuiltin("begin", dbi.begin),
+		// Basic operations
+		"close":     starlark.NewBuiltin("close", dbi.close),
+		"execute":   starlark.NewBuiltin("execute", dbi.execute),
+		"query":     starlark.NewBuiltin("query", dbi.query),
+		"query_one": starlark.NewBuiltin("query_one", dbi.queryOne),
+
+		// Prepared statements
+		"prepare":       starlark.NewBuiltin("prepare", dbi.prepare),
+		"prepare_query": starlark.NewBuiltin("prepare_query", dbi.prepareQuery),
+
+		// Transactions
+		"begin": starlark.NewBuiltin("begin", dbi.begin),
+
+		// Schema operations
 		"create_table":   starlark.NewBuiltin("create_table", dbi.createTable),
 		"drop_table":     starlark.NewBuiltin("drop_table", dbi.dropTable),
 		"table_exists":   starlark.NewBuiltin("table_exists", dbi.tableExists),
 		"truncate_table": starlark.NewBuiltin("truncate_table", dbi.truncateTable),
-		"insert":         starlark.NewBuiltin("insert", dbi.insert),
-		"insert_many":    starlark.NewBuiltin("insert_many", dbi.insertMany),
-		"update":         starlark.NewBuiltin("update", dbi.update),
-		"upsert":         starlark.NewBuiltin("upsert", dbi.upsert),
-		"delete":         starlark.NewBuiltin("delete", dbi.delete),
-		"select":         starlark.NewBuiltin("select", dbi.selectRecords),
-		"count":          starlark.NewBuiltin("count", dbi.count),
-		"attach":         starlark.NewBuiltin("attach", dbi.attach),
-		"detach":         starlark.NewBuiltin("detach", dbi.detach),
-		"tables":         starlark.NewBuiltin("tables", dbi.tables),
-		"table_info":     starlark.NewBuiltin("table_info", dbi.tableInfo),
-		"indices":        starlark.NewBuiltin("indices", dbi.indices),
+
+		// Data operations
+		"insert":      starlark.NewBuiltin("insert", dbi.insert),
+		"insert_many": starlark.NewBuiltin("insert_many", dbi.insertMany),
+		"update":      starlark.NewBuiltin("update", dbi.update),
+		"upsert":      starlark.NewBuiltin("upsert", dbi.upsert),
+		"delete":      starlark.NewBuiltin("delete", dbi.delete),
+		"select":      starlark.NewBuiltin("select", dbi.selectRecords),
+		"count":       starlark.NewBuiltin("count", dbi.count),
+
+		// Database management
+		"attach": starlark.NewBuiltin("attach", dbi.attach),
+		"detach": starlark.NewBuiltin("detach", dbi.detach),
+
+		// Schema introspection
+		"tables":     starlark.NewBuiltin("tables", dbi.tables),
+		"table_info": starlark.NewBuiltin("table_info", dbi.tableInfo),
+		"indices":    starlark.NewBuiltin("indices", dbi.indices),
 	}
 
 	return dataconv.MakeModule("database", dict)
 }
+
+// ============================================================================
+// Basic Database Operations
+// ============================================================================
 
 // close closes the database connection.
 func (db *database) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -95,6 +115,10 @@ func (db *database) execute(thread *starlark.Thread, fn *starlark.Builtin, args 
 	return starlark.MakeInt64(rowsAffected), nil
 }
 
+// ============================================================================
+// Query Operations
+// ============================================================================
+
 // query executes a SQL query with optional parameters and returns the results.
 func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var query string
@@ -117,57 +141,9 @@ func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args st
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer rows.Close()
 
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Convert result rows to a Starlark list of dicts
-	resultList := &starlark.List{}
-	for rows.Next() {
-		// Prepare scan targets
-		scanTargets := make([]interface{}, len(cols))
-		for i := range scanTargets {
-			var v interface{}
-			scanTargets[i] = &v
-		}
-
-		// Scan row data
-		if err := rows.Scan(scanTargets...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Create row dict
-		rowDict := starlark.NewDict(len(cols))
-		for i, col := range cols {
-			// Get value from scan target
-			val := *(scanTargets[i].(*interface{}))
-			// Convert to Starlark value
-			starVal, err := sqliteToStarlarkValue(val)
-			if err != nil {
-				return nil, err
-			}
-			// Add to dict
-			if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-				return nil, err
-			}
-		}
-
-		// Append to result list
-		if err := resultList.Append(rowDict); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return resultList, nil
+	// Use shared utility to process rows
+	return processQueryRows(rows)
 }
 
 // queryOne executes a SQL query and returns the first row, or None if no rows are returned.
@@ -192,53 +168,9 @@ func (db *database) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer rows.Close()
 
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Check if we have a row
-	if !rows.Next() {
-		return starlark.None, nil
-	}
-
-	// Prepare scan targets
-	scanTargets := make([]interface{}, len(cols))
-	for i := range scanTargets {
-		var v interface{}
-		scanTargets[i] = &v
-	}
-
-	// Scan row data
-	if err := rows.Scan(scanTargets...); err != nil {
-		return nil, fmt.Errorf("failed to scan row: %w", err)
-	}
-
-	// Create row dict
-	rowDict := starlark.NewDict(len(cols))
-	for i, col := range cols {
-		// Get value from scan target
-		val := *(scanTargets[i].(*interface{}))
-		// Convert to Starlark value
-		starVal, err := sqliteToStarlarkValue(val)
-		if err != nil {
-			return nil, err
-		}
-		// Add to dict
-		if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return rowDict, nil
+	// Use shared utility to process first row
+	return processQueryOneRow(rows)
 }
 
 // begin starts a new transaction.
@@ -439,20 +371,6 @@ func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args 
 	return resultList, nil
 }
 
-// quoteName quotes a SQL identifier (table or column name).
-func quoteName(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-}
-
-// quoteNames quotes a list of SQL identifiers.
-func quoteNames(names []string) string {
-	quoted := make([]string, len(names))
-	for i, name := range names {
-		quoted[i] = quoteName(name)
-	}
-	return strings.Join(quoted, ", ")
-}
-
 // tableExists checks if a table exists.
 func (db *database) tableExists(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
@@ -470,237 +388,6 @@ func (db *database) tableExists(thread *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	return starlark.Bool(count > 0), nil
-}
-
-// preparedStmt represents a prepared statement struct with methods
-// directly attached, providing cleaner and more idiomatic Go code.
-type preparedStmt struct {
-	stmt *sql.Stmt
-}
-
-// newPreparedStatementInstance creates a new Starlark prepared statement instance.
-func newPreparedStatementInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt}
-
-	// Create dictionary of methods
-	dict := starlark.StringDict{
-		"execute": starlark.NewBuiltin("execute", ps.execute),
-		"close":   starlark.NewBuiltin("close", ps.close),
-	}
-
-	return dataconv.MakeModule("prepared_statement", dict)
-}
-
-// execute executes a prepared statement with parameters.
-func (ps *preparedStmt) execute(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var params starlark.Sequence
-
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
-		"params?", &params); err != nil {
-		return nil, err
-	}
-
-	// Convert parameters to Go values
-	var goParams []interface{}
-	if params != nil {
-		iter := params.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			param, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			goParams = append(goParams, param)
-		}
-	}
-
-	// Execute the statement
-	result, err := ps.stmt.Exec(goParams...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute statement: %w", err)
-	}
-
-	// Get affected rows
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return starlark.MakeInt64(rowsAffected), nil
-}
-
-// close closes the prepared statement.
-func (ps *preparedStmt) close(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs); err != nil {
-		return nil, err
-	}
-
-	if err := ps.stmt.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close statement: %w", err)
-	}
-
-	return starlark.None, nil
-}
-
-// query executes a prepared query with parameters.
-func (ps *preparedStmt) query(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var params starlark.Sequence
-
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
-		"params?", &params); err != nil {
-		return nil, err
-	}
-
-	// Convert parameters to Go values
-	var goParams []interface{}
-	if params != nil {
-		iter := params.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			param, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			goParams = append(goParams, param)
-		}
-	}
-
-	// Execute the query
-	rows, err := ps.stmt.Query(goParams...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
-	}
-	defer rows.Close()
-
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Convert result rows to a Starlark list of dicts
-	resultList := &starlark.List{}
-	for rows.Next() {
-		// Prepare scan targets
-		scanTargets := make([]interface{}, len(cols))
-		for i := range scanTargets {
-			var v interface{}
-			scanTargets[i] = &v
-		}
-
-		// Scan row data
-		if err := rows.Scan(scanTargets...); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		// Create row dict
-		rowDict := starlark.NewDict(len(cols))
-		for i, col := range cols {
-			// Get value from scan target
-			val := *(scanTargets[i].(*interface{}))
-			// Convert to Starlark value
-			starVal, err := sqliteToStarlarkValue(val)
-			if err != nil {
-				return nil, err
-			}
-			// Add to dict
-			if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-				return nil, err
-			}
-		}
-
-		// Append to result list
-		if err := resultList.Append(rowDict); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return resultList, nil
-}
-
-// queryOne executes a prepared query and returns the first row, or None if no rows are returned.
-func (ps *preparedStmt) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var params starlark.Sequence
-
-	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
-		"params?", &params); err != nil {
-		return nil, err
-	}
-
-	// Convert parameters to Go values
-	var goParams []interface{}
-	if params != nil {
-		iter := params.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			param, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			goParams = append(goParams, param)
-		}
-	}
-
-	// Execute the query
-	rows, err := ps.stmt.Query(goParams...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
-	}
-	defer rows.Close()
-
-	// Get column names
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
-	}
-
-	// Check if we have a row
-	if !rows.Next() {
-		return starlark.None, nil
-	}
-
-	// Prepare scan targets
-	scanTargets := make([]interface{}, len(cols))
-	for i := range scanTargets {
-		var v interface{}
-		scanTargets[i] = &v
-	}
-
-	// Scan row data
-	if err := rows.Scan(scanTargets...); err != nil {
-		return nil, fmt.Errorf("failed to scan row: %w", err)
-	}
-
-	// Create row dict
-	rowDict := starlark.NewDict(len(cols))
-	for i, col := range cols {
-		// Get value from scan target
-		val := *(scanTargets[i].(*interface{}))
-		// Convert to Starlark value
-		starVal, err := sqliteToStarlarkValue(val)
-		if err != nil {
-			return nil, err
-		}
-		// Add to dict
-		if err := rowDict.SetKey(starlark.String(col), starVal); err != nil {
-			return nil, err
-		}
-	}
-
-	// Check for errors after iteration
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error during query iteration: %w", err)
-	}
-
-	return rowDict, nil
 }
 
 // prepare prepares a SQL statement.
@@ -739,18 +426,4 @@ func (db *database) prepareQuery(thread *starlark.Thread, fn *starlark.Builtin, 
 
 	// Create prepared query object
 	return newPreparedQueryInstance(stmt), nil
-}
-
-// newPreparedQueryInstance creates a new Starlark prepared query instance.
-func newPreparedQueryInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt}
-
-	// Create dictionary of methods
-	dict := starlark.StringDict{
-		"query":     starlark.NewBuiltin("query", ps.query),
-		"query_one": starlark.NewBuiltin("query_one", ps.queryOne),
-		"close":     starlark.NewBuiltin("close", ps.close),
-	}
-
-	return dataconv.MakeModule("prepared_query", dict)
 }

@@ -82,15 +82,15 @@ db.close()
 
 The `sqlite` module can be configured with the following options (all optional, with sensible defaults):
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `database` | string | `:memory:` | Path to SQLite database (use `:memory:` for in-memory) |
-| `timeout` | float | 30.0 | Connection timeout in seconds |
-| `busy_timeout` | float | 5.0 | Busy timeout in seconds |
-| `foreign_keys` | bool | true | Enable foreign key constraints |
-| `journal_mode` | string | `DELETE` | Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF) |
-| `synchronous` | string | `FULL` | Synchronous mode (FULL, NORMAL, OFF) |
-| `cache_size` | int | -2000 | Cache size in number of pages (negative = default) |
+| Option | Type | Default | Environment Variable | Description |
+|--------|------|---------|---------------------|-------------|
+| `database` | string | `:memory:` | `SQLITE_DATABASE` | Path to SQLite database (use `:memory:` for in-memory) |
+| `timeout` | float | 30.0 | `SQLITE_TIMEOUT` | Connection timeout in seconds |
+| `busy_timeout` | float | 5.0 | `SQLITE_BUSY_TIMEOUT` | Busy timeout in seconds |
+| `foreign_keys` | bool | true | `SQLITE_FOREIGN_KEYS` | Enable foreign key constraints |
+| `journal_mode` | string | `DELETE` | `SQLITE_JOURNAL_MODE` | Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF) |
+| `synchronous` | string | `FULL` | `SQLITE_SYNCHRONOUS` | Synchronous mode (FULL, NORMAL, OFF) |
+| `cache_size` | int | -2000 | `SQLITE_CACHE_SIZE` | Cache size in number of pages (negative = default) |
 
 Module options serve as defaults and will be used when corresponding arguments are not provided to connection functions.
 
@@ -101,7 +101,7 @@ Module options serve as defaults and will be used when corresponding arguments a
 module := sqlite.NewModule()
 
 // Method 2: Configure via environment variables
-// SQLITE_DATABASE, SQLITE_TIMEOUT, SQLITE_FOREIGN_KEYS, etc.
+// Set SQLITE_DATABASE, SQLITE_TIMEOUT, SQLITE_FOREIGN_KEYS, etc.
 module := sqlite.NewModule()
 
 // Method 3: Configure programmatically (using the base module system)
@@ -346,18 +346,21 @@ Begins a new transaction.
 # Begin a transaction
 tx = db.begin()
 
-try:
-    # Execute operations within the transaction
-    tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
-    tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
-    
-    # Commit the transaction
-    tx.commit()
-    print("Transfer successful")
-except Exception as e:
-    # Rollback on error
-    tx.rollback()
-    print("Transfer failed:", str(e))
+# Execute operations within the transaction
+# Note: In Starlark, errors will automatically cause script failure
+# Use proper validation instead of try/except
+tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
+tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
+
+# Commit the transaction
+tx.commit()
+print("Transfer successful")
+
+# For error handling, you can check conditions beforehand:
+# source_balance = tx.query_one("SELECT balance FROM accounts WHERE id = ?", [1])
+# if not source_balance or source_balance["balance"] < 100:
+#     tx.rollback()
+#     fail("Insufficient funds for transfer")
 ```
 
 #### Transaction Object Methods
@@ -538,7 +541,7 @@ rows_inserted = db.insert_many("users", [
 print("Inserted {} users".format(rows_inserted))
 ```
 
-##### `update(table, values, where)`
+##### `update(table, values, where?)`
 
 Updates records in a table.
 
@@ -546,14 +549,20 @@ Updates records in a table.
 
 - `table` (string): Name of the table
 - `values` (dict): Dictionary mapping column names to new values
-- `where` (list): Where clause as `[condition, param1, param2, ...]`
+- `where` (string, list, or None): Optional where clause. Can be:
+  - None: Update all records (use with caution!)
+  - String: Simple where clause with no parameters (e.g., "age > 18")
+  - List: Where clause with parameters as `[condition, param1, param2, ...]`
 
 **Returns:** Number of rows updated (int)
 
 **Example:**
 
 ```python
-# Update a user's age
+# Update with simple string condition
+db.update("users", {"status": "inactive"}, "age < 18")
+
+# Update with parameterized condition (recommended for user input)
 rows_updated = db.update("users", 
     {"age": 31}, 
     ["name = ?", "Alice"]
@@ -588,21 +597,27 @@ db.upsert("users",
 )
 ```
 
-##### `delete(table, where)`
+##### `delete(table, where?)`
 
 Deletes records from a table.
 
 **Parameters:**
 
 - `table` (string): Name of the table
-- `where` (list): Where clause as `[condition, param1, param2, ...]`
+- `where` (string, list, or None): Optional where clause. Can be:
+  - None: Delete all records (use with extreme caution!)
+  - String: Simple where clause with no parameters (e.g., "age < 18")
+  - List: Where clause with parameters as `[condition, param1, param2, ...]`
 
 **Returns:** Number of rows deleted (int)
 
 **Example:**
 
 ```python
-# Delete a specific user
+# Delete with simple string condition
+rows_deleted = db.delete("users", "age < 18")
+
+# Delete with parameterized condition (recommended for user input)
 rows_deleted = db.delete("users", ["name = ?", "Bob"])
 
 # Delete with multiple conditions
@@ -619,7 +634,10 @@ Selects records from a table with flexible filtering and sorting options.
 
 - `table` (string): Name of the table
 - `columns` (string or list): Column names to select, "*" for all, or list of column names
-- `where` (list): Optional where clause as `[condition, param1, param2, ...]`
+- `where` (string, list, or None): Optional where clause. Can be:
+  - None: No filtering
+  - String: Simple where clause with no parameters (e.g., "age > 18")
+  - List: Where clause with parameters as `[condition, param1, param2, ...]`
 - `order_by` (string): Optional ORDER BY clause (e.g., "name ASC", "age DESC")
 - `limit` (int): Optional maximum number of rows to return
 - `offset` (int): Optional number of rows to skip
@@ -632,16 +650,16 @@ Selects records from a table with flexible filtering and sorting options.
 # Select all users
 users = db.select("users")
 
-# Select specific columns with conditions
+# Select with simple string condition
 adult_users = db.select("users", 
     ["name", "email"], 
-    ["age >= ?", 18], 
+    "age >= 18", 
     order_by="name ASC",
     limit=10
 )
 
-# Select with pagination
-page_2_users = db.select("users", 
+# Select with parameterized conditions (recommended for user input)
+active_users = db.select("users", 
     "*", 
     ["active = ?", True],
     order_by="created_at DESC",
@@ -657,7 +675,10 @@ Counts records in a table with optional filtering.
 **Parameters:**
 
 - `table` (string): Name of the table
-- `where` (list): Optional where clause as `[condition, param1, param2, ...]`
+- `where` (string, list, or None): Optional where clause. Can be:
+  - None: Count all records
+  - String: Simple where clause with no parameters (e.g., "age > 18")
+  - List: Where clause with parameters as `[condition, param1, param2, ...]`
 
 **Returns:** Number of matching records (int)
 
@@ -667,7 +688,10 @@ Counts records in a table with optional filtering.
 # Count all users
 total_users = db.count("users")
 
-# Count active users
+# Count with simple string condition (no parameters)
+adult_users = db.count("users", "age >= 18")
+
+# Count with parameterized condition (recommended for user input)
 active_users = db.count("users", ["status = ?", "active"])
 
 # Count with multiple conditions
@@ -902,47 +926,44 @@ def main():
         """Transfer money between accounts using a transaction."""
         tx = db.begin()
         
-        try:
-            # Check source account balance
-            source = tx.query_one(
-                "SELECT * FROM accounts WHERE account_number = ?",
-                [from_account]
-            )
-            
-            if not source:
-                raise Exception("Source account not found")
-            
-            if source["balance"] < amount:
-                raise Exception("Insufficient funds")
-            
-            # Check destination account exists
-            destination = tx.query_one(
-                "SELECT * FROM accounts WHERE account_number = ?",
-                [to_account]
-            )
-            
-            if not destination:
-                raise Exception("Destination account not found")
-            
-            # Perform the transfer
-            tx.execute(
-                "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
-                [amount, from_account]
-            )
-            
-            tx.execute(
-                "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
-                [amount, to_account]
-            )
-            
-            # Commit the transaction
-            tx.commit()
-            return True, "Transfer successful"
-            
-        except Exception as e:
-            # Rollback on any error
+        # Check source account balance
+        source = tx.query_one(
+            "SELECT * FROM accounts WHERE account_number = ?",
+            [from_account]
+        )
+        
+        if not source:
             tx.rollback()
-            return False, str(e)
+            return False, "Source account not found"
+        
+        if source["balance"] < amount:
+            tx.rollback()
+            return False, "Insufficient funds"
+        
+        # Check destination account exists
+        destination = tx.query_one(
+            "SELECT * FROM accounts WHERE account_number = ?",
+            [to_account]
+        )
+        
+        if not destination:
+            tx.rollback()
+            return False, "Destination account not found"
+        
+        # Perform the transfer
+        tx.execute(
+            "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
+            [amount, from_account]
+        )
+        
+        tx.execute(
+            "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
+            [amount, to_account]
+        )
+        
+        # Commit the transaction
+        tx.commit()
+        return True, "Transfer successful"
     
     # Perform transfers
     success, message = transfer_money("ACC001", "ACC002", 200.0)
@@ -1146,26 +1167,46 @@ db.update("users", {"status": "active"}, ["id = ?", user_id])
 
 ## Error Handling
 
-The module provides clear error messages for common issues:
+The module provides clear error messages for common issues. In Starlark, errors cause the script to fail immediately with a non-zero exit code, which can be caught by the calling shell script:
 
 ```python
 load("sqlite", "connect")
 
 def main():
-    try:
-        db = connect("readonly.db")
-        
-        # Database operations
-        db.insert("users", {"name": "Alice"})
-        
-    except Exception as e:
-        print("Database error:", str(e))
-        # Handle the error appropriately
-    finally:
-        if 'db' in locals():
-            db.close()
+    # In Starlark, database operations that fail will automatically
+    # cause the script to exit with an error message
+    
+    # Check if database file exists before connecting (if needed)
+    db = connect("myapp.db")
+    
+    # Validate data before operations
+    user_name = "Alice"
+    if not user_name:
+        fail("User name cannot be empty")
+    
+    # Database operations - any SQL errors will cause script failure
+    db.insert("users", {"name": user_name})
+    
+    # Always close connections
+    db.close()
+    
+    print("Operations completed successfully")
 
 main()
+```
+
+**Shell script error handling:**
+
+```bash
+#!/bin/bash
+
+# Run the Starlark script and capture exit code
+if starcli database_script.star; then
+    echo "Database operations successful"
+else
+    echo "Database operations failed with exit code $?"
+    # Handle the error as needed
+fi
 ```
 
 ## Performance Tips
@@ -1177,15 +1218,24 @@ main()
 - **Close connections** when done to free resources
 
 ```python
-# Efficient bulk operations
-tx = db.begin()
-stmt = tx.prepare("INSERT INTO users (name, email) VALUES (?, ?)")
+# Method 1: Use insert_many for bulk inserts (recommended, automatically uses transactions)
+db.insert_many("users", [
+    {"name": user["name"], "email": user["email"]} 
+    for user in large_user_list
+])
 
+# Method 2: Use prepared statements for repeated operations
+stmt = db.prepare("INSERT INTO users (name, email) VALUES (?, ?)")
 for user_data in large_user_list:
     stmt.execute([user_data["name"], user_data["email"]])
-
-tx.commit()
 stmt.close()
+
+# Method 3: Manual transaction for complex operations
+tx = db.begin()
+for user_data in large_user_list:
+    tx.execute("INSERT INTO users (name, email) VALUES (?, ?)", 
+               [user_data["name"], user_data["email"]])
+tx.commit()
 ```
 
 ## License

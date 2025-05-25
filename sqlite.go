@@ -8,20 +8,24 @@ import (
 	"time"
 
 	"github.com/1set/starlet"
-	"github.com/1set/starlet/dataconv"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
-	startime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
 )
+
+// ============================================================================
+// Module Constants and Configuration
+// ============================================================================
 
 // Module constants
 const (
 	// ModuleName defines the expected name for this module when used in Starlark's load() function
 	ModuleName = "sqlite"
+)
 
-	// Default configuration values
+// Default configuration values
+const (
 	defaultTimeout     = 30.0       // Default connection timeout in seconds.
 	defaultBusyTimeout = 5.0        // Default busy timeout in seconds. SQLite will wait for this duration if the database is locked.
 	defaultDatabase    = ":memory:" // Default database path. Use ":memory:" for an in-memory database, or provide a file path.
@@ -46,6 +50,10 @@ const (
 	configKeySynchronous = "synchronous"
 	configKeyCacheSize   = "cache_size"
 )
+
+// ============================================================================
+// Module Structure and Creation
+// ============================================================================
 
 // Module wraps the ConfigurableModule with specific functionality for SQLite operations.
 type Module struct {
@@ -100,6 +108,10 @@ func newModuleWithOptions(
 	}
 }
 
+// ============================================================================
+// Module Loading and Starlark Integration
+// ============================================================================
+
 // LoadModule returns the Starlark module loader with SQLite-specific functions.
 func (m *Module) LoadModule() starlet.ModuleLoader {
 	// Prepare methods dictionary
@@ -110,6 +122,10 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 	// Return the module
 	return m.cfgMod.LoadModule(ModuleName, additionalFuncs)
 }
+
+// ============================================================================
+// Database Connection Functions
+// ============================================================================
 
 // connect implements the connect function that creates a new database connection.
 func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -209,98 +225,4 @@ func openDatabase(connStr string, timeout, busyTimeout float64, foreignKeys bool
 	db.SetConnMaxLifetime(time.Duration(timeout * float64(time.Second)))
 
 	return db, nil
-}
-
-// boolToInt converts a boolean value to an integer (1 for true, 0 for false)
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-// Convert Starlark value to a Go value suitable for SQLite
-func starlarkToSQLiteValue(v starlark.Value) (interface{}, error) {
-	switch v := v.(type) {
-	case starlark.NoneType:
-		return nil, nil
-	case starlark.Bool:
-		if v {
-			return 1, nil
-		}
-		return 0, nil
-	case starlark.Int:
-		if i, ok := v.Int64(); ok {
-			return i, nil
-		}
-		return nil, fmt.Errorf("int value too large for SQLite: %v", v)
-	case starlark.Float:
-		return float64(v), nil
-	case starlark.String:
-		return string(v), nil
-	case starlark.Bytes:
-		return []byte(v), nil
-	case startime.Time:
-		return time.Time(v), nil
-	case *starlark.Dict, *starlark.List:
-		// Convert to JSON
-		return dataconv.MarshalStarlarkJSON(v, 0)
-	default:
-		return nil, fmt.Errorf("unsupported type for SQLite: %s", v.Type())
-	}
-}
-
-// Convert a Go value from SQLite to a Starlark value
-func sqliteToStarlarkValue(v interface{}) (starlark.Value, error) {
-	if v == nil {
-		return starlark.None, nil
-	}
-
-	switch v := v.(type) {
-	case int:
-		return starlark.MakeInt(v), nil
-	case int64:
-		return starlark.MakeInt64(v), nil
-	case float64:
-		return starlark.Float(v), nil
-	case bool:
-		return starlark.Bool(v), nil
-	case string:
-		return starlark.String(v), nil
-	case []byte:
-		return starlark.Bytes(v), nil
-	case time.Time:
-		return startime.Time(v), nil
-	default:
-		return nil, fmt.Errorf("unsupported SQLite type for Starlark: %T", v)
-	}
-}
-
-// sqlQuery contains the query and optional parameters
-type sqlQuery struct {
-	query  string
-	params []interface{}
-}
-
-// newSQLQuery creates a new SQL query from a query string and Starlark parameters
-func newSQLQuery(query string, params starlark.Sequence) (*sqlQuery, error) {
-	// Get parameters as Go values
-	var goParams []interface{}
-	if params != nil {
-		iter := params.Iterate()
-		defer iter.Done()
-		var val starlark.Value
-		for iter.Next(&val) {
-			param, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				return nil, err
-			}
-			goParams = append(goParams, param)
-		}
-	}
-
-	return &sqlQuery{
-		query:  query,
-		params: goParams,
-	}, nil
 }
