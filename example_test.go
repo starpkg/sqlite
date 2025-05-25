@@ -347,10 +347,8 @@ def main():
     
     for i, eng in enumerate(engineers):
         print("  {} - ${}".format(eng["name"], eng["salary"]))
-        if eng["name"] != expected_names[i]:
+        if eng["name"] != expected_names[i] or eng["salary"] != expected_salaries[i]:
             fail("Expected engineer {} to be {}, got {}".format(i, expected_names[i], eng["name"]))
-        if eng["salary"] != expected_salaries[i]:
-            fail("Expected salary {} to be {}, got {}".format(i, expected_salaries[i], eng["salary"]))
     
     # Update records
     updated_rows = db.update("employees", {"salary": 95000}, ["name = ?", "Bob Johnson"])
@@ -415,6 +413,56 @@ def main():
     db.close()
     
     print("✓ All high-level operation tests passed")
+
+main()
+`},
+		{"BatchOperations", `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+
+    # Create a simple table
+    db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
+    
+    # Test simple batch with string queries
+    results = db.batch([
+        "INSERT INTO test (name) VALUES ('Alice')",
+        "INSERT INTO test (name) VALUES ('Bob')"
+    ])
+    
+    if len(results) != 2:
+        fail("Expected 2 results, got {}".format(len(results)))
+    
+    for result in results:
+        if result != 1:
+            fail("Expected 1 affected row")
+    
+    # Test batch with parameterized queries
+    results = db.batch([
+        ["INSERT INTO test (name) VALUES (?)", ["Charlie"]],
+        ["UPDATE test SET name = ? WHERE id = ?", ["Alice Updated", 1]]
+    ])
+    
+    if len(results) != 2:
+        fail("Expected 2 results")
+        
+    # Verify results
+    rows = db.query("SELECT * FROM test ORDER BY id")
+    if len(rows) != 3:
+        fail("Expected 3 rows")
+        
+    if rows[0]["name"] != "Alice Updated":
+        fail("First row should be updated")
+        
+    if rows[1]["name"] != "Bob":
+        fail("Second row should be Bob")
+        
+    if rows[2]["name"] != "Charlie":
+        fail("Third row should be Charlie")
+    
+    db.close()
+    print("✓ All batch operation tests passed")
 
 main()
 `},

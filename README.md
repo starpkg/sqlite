@@ -8,6 +8,7 @@ A comprehensive Go module that brings the power of SQLite database operations to
 ## Features
 
 - ✅ Low-level SQL execution with prepared statements and parameterized queries
+- ✅ Batch operations for executing multiple statements in a single transaction
 - ✅ High-level table and record operations for common database tasks
 - ✅ Transaction management with begin/commit/rollback support
 - ✅ SQL injection prevention through parameterized queries
@@ -192,6 +193,46 @@ rows_affected = db.execute(
     "INSERT INTO users (name, email) VALUES (?, ?)",
     ["Alice", "alice@example.com"]
 )
+```
+
+##### `batch(queries)`
+
+Executes multiple SQL statements in a single transaction.
+
+**Parameters:**
+
+- `queries` (list): List of queries to execute. Each item can be:
+  - A string (SQL statement without parameters)
+  - A list/tuple with [query, params] (SQL statement with parameters)
+
+**Returns:** List of integers representing affected rows for each query
+
+**Example:**
+
+```python
+# Simple batch with string queries
+results = db.batch([
+    "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')",
+    "INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com')",
+    "UPDATE users SET active = 1"
+])
+
+# Batch with parameterized queries
+results = db.batch([
+    ["INSERT INTO users (name, email) VALUES (?, ?)", ["Charlie", "charlie@example.com"]],
+    ["UPDATE users SET last_login = ? WHERE id = ?", ["2023-08-15", 1]],
+    ["DELETE FROM users WHERE active = ?", [0]]
+])
+
+# Mixed batch (some with params, some without)
+results = db.batch([
+    "CREATE INDEX idx_users_email ON users(email)",
+    ["INSERT INTO users (name, email) VALUES (?, ?)", ["David", "david@example.com"]],
+    "VACUUM"
+])
+
+# All operations are executed in a single transaction
+# If any operation fails, the entire batch is rolled back
 ```
 
 ##### `query(query, params?)`
