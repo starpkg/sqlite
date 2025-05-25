@@ -1121,6 +1121,85 @@ def main():
 main()
 ```
 
+### Batch Operations Example
+
+```python
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create tables using batch operations
+    setup_results = db.batch([
+        """CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0.0
+        )""",
+        """CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY,
+            from_account INTEGER,
+            to_account INTEGER,
+            amount REAL NOT NULL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX idx_accounts_name ON accounts(name)"
+    ])
+    
+    print("Setup completed. Results:", setup_results)
+    
+    # Insert initial data using batch with parameters
+    initial_data = db.batch([
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Alice", 1000.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Bob", 500.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Charlie", 750.0]]
+    ])
+    
+    print("Initial data inserted. Results:", initial_data)
+    
+    # Perform a money transfer using batch operations
+    transfer_amount = 200.0
+    transfer_results = db.batch([
+        ["UPDATE accounts SET balance = balance - ? WHERE name = ?", [transfer_amount, "Alice"]],
+        ["UPDATE accounts SET balance = balance + ? WHERE name = ?", [transfer_amount, "Bob"]],
+        ["INSERT INTO transactions (from_account, to_account, amount) VALUES (?, ?, ?)", [1, 2, transfer_amount]]
+    ])
+    
+    print("Transfer completed. Results:", transfer_results)
+    
+    # Mixed batch operations (some with params, some without)
+    mixed_results = db.batch([
+        "UPDATE accounts SET balance = 1000.0 WHERE id = 3",  # String query
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["David", 300.0]],  # Parameterized
+        "DELETE FROM transactions WHERE amount < 50.0"  # String query
+    ])
+    
+    print("Mixed operations completed. Results:", mixed_results)
+    
+    # Verify the results
+    accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    print("\nFinal account balances:")
+    for account in accounts:
+        print("  {}: ${}".format(account["name"], account["balance"]))
+    
+    # Check transaction history
+    transactions = db.query("SELECT * FROM transactions")
+    print("\nTransaction history:")
+    for tx in transactions:
+        print("  From account {} to account {}: ${}".format(
+            tx["from_account"], tx["to_account"], tx["amount"]))
+    
+    # All operations within each batch are executed in a single transaction
+    # If any operation fails, the entire batch is rolled back
+    
+    db.close()
+    
+    print("\n✓ Batch operations example completed successfully!")
+
+main()
+```
+
 ### Multi-Database Example
 
 ```python
@@ -1345,6 +1424,7 @@ fi
 
 ## Performance Tips
 
+- Use **batch operations** for multiple related statements in a single transaction
 - Use **transactions** for multiple related operations
 - Use **prepared statements** for repeated operations
 - Consider using **WAL mode** for concurrent access
@@ -1352,19 +1432,27 @@ fi
 - **Close connections** when done to free resources
 
 ```python
-# Method 1: Use insert_many for bulk inserts (recommended, automatically uses transactions)
+# Method 1: Use batch operations for multiple statements (recommended for mixed operations)
+db.batch([
+    "CREATE TABLE temp_users (id INTEGER, name TEXT)",
+    ["INSERT INTO temp_users VALUES (?, ?)", [1, "Alice"]],
+    ["INSERT INTO temp_users VALUES (?, ?)", [2, "Bob"]],
+    "CREATE INDEX idx_temp_users_name ON temp_users(name)"
+])
+
+# Method 2: Use insert_many for bulk inserts (recommended, automatically uses transactions)
 db.insert_many("users", [
     {"name": user["name"], "email": user["email"]} 
     for user in large_user_list
 ])
 
-# Method 2: Use prepared statements for repeated operations
+# Method 3: Use prepared statements for repeated operations
 stmt = db.prepare("INSERT INTO users (name, email) VALUES (?, ?)")
 for user_data in large_user_list:
     stmt.execute([user_data["name"], user_data["email"]])
 stmt.close()
 
-# Method 3: Manual transaction for complex operations
+# Method 4: Manual transaction for complex operations
 tx = db.begin()
 for user_data in large_user_list:
     tx.execute("INSERT INTO users (name, email) VALUES (?, ?)", 
