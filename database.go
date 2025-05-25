@@ -155,21 +155,15 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 				return nil, fmt.Errorf("query %d: empty sequence", i)
 			}
 
-			// Cast to concrete type for Index access
-			var queryVal starlark.Value
-			var paramsVal starlark.Value
+			// Use iterator to access elements
+			iter := item.Iterate()
+			defer iter.Done()
 
-			switch seq := item.(type) {
-			case *starlark.List:
-				queryVal = seq.Index(0)
-				if seq.Len() > 1 {
-					paramsVal = seq.Index(1)
-				}
-			case starlark.Tuple:
-				queryVal = seq.Index(0)
-				if seq.Len() > 1 {
-					paramsVal = seq.Index(1)
-				}
+			// Get the first element (query)
+			var queryVal starlark.Value
+			if !iter.Next(&queryVal) {
+				tx.Rollback()
+				return nil, fmt.Errorf("query %d: failed to get query string", i)
 			}
 
 			queryStr, ok := queryVal.(starlark.String)
@@ -179,13 +173,16 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 			}
 			query = string(queryStr)
 
-			// Get parameters if present
-			if paramsVal != nil {
-				if paramsSeq, ok := paramsVal.(starlark.Sequence); ok {
-					params = paramsSeq
-				} else {
-					tx.Rollback()
-					return nil, fmt.Errorf("query %d: second element must be a sequence of parameters", i)
+			// Get the second element (params) if present
+			if item.Len() > 1 {
+				var paramsVal starlark.Value
+				if iter.Next(&paramsVal) {
+					if paramsSeq, ok := paramsVal.(starlark.Sequence); ok {
+						params = paramsSeq
+					} else {
+						tx.Rollback()
+						return nil, fmt.Errorf("query %d: second element must be a sequence of parameters", i)
+					}
 				}
 			}
 
