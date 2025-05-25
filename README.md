@@ -346,18 +346,21 @@ Begins a new transaction.
 # Begin a transaction
 tx = db.begin()
 
-try:
-    # Execute operations within the transaction
-    tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
-    tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
-    
-    # Commit the transaction
-    tx.commit()
-    print("Transfer successful")
-except Exception as e:
-    # Rollback on error
-    tx.rollback()
-    print("Transfer failed:", str(e))
+# Execute operations within the transaction
+# Note: In Starlark, errors will automatically cause script failure
+# Use proper validation instead of try/except
+tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
+tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
+
+# Commit the transaction
+tx.commit()
+print("Transfer successful")
+
+# For error handling, you can check conditions beforehand:
+# source_balance = tx.query_one("SELECT balance FROM accounts WHERE id = ?", [1])
+# if not source_balance or source_balance["balance"] < 100:
+#     tx.rollback()
+#     fail("Insufficient funds for transfer")
 ```
 
 #### Transaction Object Methods
@@ -923,47 +926,44 @@ def main():
         """Transfer money between accounts using a transaction."""
         tx = db.begin()
         
-        try:
-            # Check source account balance
-            source = tx.query_one(
-                "SELECT * FROM accounts WHERE account_number = ?",
-                [from_account]
-            )
-            
-            if not source:
-                raise Exception("Source account not found")
-            
-            if source["balance"] < amount:
-                raise Exception("Insufficient funds")
-            
-            # Check destination account exists
-            destination = tx.query_one(
-                "SELECT * FROM accounts WHERE account_number = ?",
-                [to_account]
-            )
-            
-            if not destination:
-                raise Exception("Destination account not found")
-            
-            # Perform the transfer
-            tx.execute(
-                "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
-                [amount, from_account]
-            )
-            
-            tx.execute(
-                "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
-                [amount, to_account]
-            )
-            
-            # Commit the transaction
-            tx.commit()
-            return True, "Transfer successful"
-            
-        except Exception as e:
-            # Rollback on any error
+        # Check source account balance
+        source = tx.query_one(
+            "SELECT * FROM accounts WHERE account_number = ?",
+            [from_account]
+        )
+        
+        if not source:
             tx.rollback()
-            return False, str(e)
+            return False, "Source account not found"
+        
+        if source["balance"] < amount:
+            tx.rollback()
+            return False, "Insufficient funds"
+        
+        # Check destination account exists
+        destination = tx.query_one(
+            "SELECT * FROM accounts WHERE account_number = ?",
+            [to_account]
+        )
+        
+        if not destination:
+            tx.rollback()
+            return False, "Destination account not found"
+        
+        # Perform the transfer
+        tx.execute(
+            "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
+            [amount, from_account]
+        )
+        
+        tx.execute(
+            "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
+            [amount, to_account]
+        )
+        
+        # Commit the transaction
+        tx.commit()
+        return True, "Transfer successful"
     
     # Perform transfers
     success, message = transfer_money("ACC001", "ACC002", 200.0)
@@ -1167,26 +1167,46 @@ db.update("users", {"status": "active"}, ["id = ?", user_id])
 
 ## Error Handling
 
-The module provides clear error messages for common issues:
+The module provides clear error messages for common issues. In Starlark, errors cause the script to fail immediately with a non-zero exit code, which can be caught by the calling shell script:
 
 ```python
 load("sqlite", "connect")
 
 def main():
-    try:
-        db = connect("readonly.db")
-        
-        # Database operations
-        db.insert("users", {"name": "Alice"})
-        
-    except Exception as e:
-        print("Database error:", str(e))
-        # Handle the error appropriately
-    finally:
-        if 'db' in locals():
-            db.close()
+    # In Starlark, database operations that fail will automatically
+    # cause the script to exit with an error message
+    
+    # Check if database file exists before connecting (if needed)
+    db = connect("myapp.db")
+    
+    # Validate data before operations
+    user_name = "Alice"
+    if not user_name:
+        fail("User name cannot be empty")
+    
+    # Database operations - any SQL errors will cause script failure
+    db.insert("users", {"name": user_name})
+    
+    # Always close connections
+    db.close()
+    
+    print("Operations completed successfully")
 
 main()
+```
+
+**Shell script error handling:**
+
+```bash
+#!/bin/bash
+
+# Run the Starlark script and capture exit code
+if starcli database_script.star; then
+    echo "Database operations successful"
+else
+    echo "Database operations failed with exit code $?"
+    # Handle the error as needed
+fi
 ```
 
 ## Performance Tips
