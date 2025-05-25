@@ -420,48 +420,100 @@ main()
 load("sqlite", "connect")
 
 def main():
+    # Connect to an in-memory database
     db = connect(":memory:")
-
-    # Create a simple table
-    db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
     
-    # Test simple batch with string queries
-    results = db.batch([
-        "INSERT INTO test (name) VALUES ('Alice')",
-        "INSERT INTO test (name) VALUES ('Bob')"
+    # Create tables using batch operations
+    setup_results = db.batch([
+        """CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0.0
+        )""",
+        """CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY,
+            from_account INTEGER,
+            to_account INTEGER,
+            amount REAL NOT NULL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX idx_accounts_name ON accounts(name)"
     ])
     
-    if len(results) != 2:
-        fail("Expected 2 results, got {}".format(len(results)))
+    if len(setup_results) != 3:
+        fail("Expected 3 setup results, got {}".format(len(setup_results)))
+    print("Setup completed. Results:", setup_results)
     
-    for result in results:
-        if result != 1:
-            fail("Expected 1 affected row")
-    
-    # Test batch with parameterized queries
-    results = db.batch([
-        ["INSERT INTO test (name) VALUES (?)", ["Charlie"]],
-        ["UPDATE test SET name = ? WHERE id = ?", ["Alice Updated", 1]]
+    # Insert initial data using batch with parameters
+    initial_data = db.batch([
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Alice", 1000.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Bob", 500.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Charlie", 750.0]]
     ])
     
-    if len(results) != 2:
-        fail("Expected 2 results")
-        
-    # Verify results
-    rows = db.query("SELECT * FROM test ORDER BY id")
-    if len(rows) != 3:
-        fail("Expected 3 rows")
-        
-    if rows[0]["name"] != "Alice Updated":
-        fail("First row should be updated")
-        
-    if rows[1]["name"] != "Bob":
-        fail("Second row should be Bob")
-        
-    if rows[2]["name"] != "Charlie":
-        fail("Third row should be Charlie")
+    if len(initial_data) != 3:
+        fail("Expected 3 initial data results, got {}".format(len(initial_data)))
+    print("Initial data inserted. Results:", initial_data)
     
+    # Verify initial data
+    accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    if len(accounts) != 3:
+        fail("Expected 3 accounts, got {}".format(len(accounts)))
+    
+    # Perform a money transfer using batch operations
+    transfer_amount = 200.0
+    transfer_results = db.batch([
+        ["UPDATE accounts SET balance = balance - ? WHERE name = ?", [transfer_amount, "Alice"]],
+        ["UPDATE accounts SET balance = balance + ? WHERE name = ?", [transfer_amount, "Bob"]],
+        ["INSERT INTO transactions (from_account, to_account, amount) VALUES (?, ?, ?)", [1, 2, transfer_amount]]
+    ])
+    
+    if len(transfer_results) != 3:
+        fail("Expected 3 transfer results, got {}".format(len(transfer_results)))
+    print("Transfer completed. Results:", transfer_results)
+    
+    # Test mixed batch (some with params, some without)
+    mixed_results = db.batch([
+        "UPDATE accounts SET balance = 1000.0 WHERE id = 3",
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["David", 300.0]],
+        "DELETE FROM transactions WHERE amount < 50.0"
+    ])
+    
+    if len(mixed_results) != 3:
+        fail("Expected 3 mixed results, got {}".format(len(mixed_results)))
+    
+    # Verify the results
+    final_accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    expected_names = ["Alice", "Bob", "Charlie", "David"]
+    if len(final_accounts) != 4:
+        fail("Expected 4 accounts after all operations, got {}".format(len(final_accounts)))
+    
+    for i, account in enumerate(final_accounts):
+        if account["name"] != expected_names[i]:
+            fail("Account {} name mismatch: expected {}, got {}".format(i, expected_names[i], account["name"]))
+    
+    # Verify specific balances
+    alice_balance = final_accounts[0]["balance"]  # Alice
+    bob_balance = final_accounts[1]["balance"]    # Bob
+    
+    if alice_balance != 800.0:  # 1000 - 200
+        fail("Alice balance should be 800.0, got {}".format(alice_balance))
+    if bob_balance != 700.0:    # 500 + 200
+        fail("Bob balance should be 700.0, got {}".format(bob_balance))
+    
+    # Check transaction history
+    transactions = db.query("SELECT * FROM transactions")
+    if len(transactions) != 1:
+        fail("Expected 1 transaction, got {}".format(len(transactions)))
+    
+    tx = transactions[0]
+    if tx["from_account"] != 1 or tx["to_account"] != 2 or tx["amount"] != 200.0:
+        fail("Transaction data incorrect: from={}, to={}, amount={}".format(
+            tx["from_account"], tx["to_account"], tx["amount"]))
+    
+    # Close the connection
     db.close()
+    
     print("✓ All batch operation tests passed")
 
 main()

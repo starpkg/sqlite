@@ -155,11 +155,10 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 				return nil, fmt.Errorf("query %d: empty sequence", i)
 			}
 
-			// Get query string
+			// Cast to concrete type for Index access
 			var queryVal starlark.Value
 			var paramsVal starlark.Value
 
-			// Handle both List and Tuple sequences
 			switch seq := item.(type) {
 			case *starlark.List:
 				queryVal = seq.Index(0)
@@ -171,9 +170,6 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 				if seq.Len() > 1 {
 					paramsVal = seq.Index(1)
 				}
-			default:
-				tx.Rollback()
-				return nil, fmt.Errorf("query %d: unsupported sequence type", i)
 			}
 
 			queryStr, ok := queryVal.(starlark.String)
