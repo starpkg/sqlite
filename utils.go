@@ -80,6 +80,25 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// formatSQLValue formats a Go value for use in SQL statements.
+func formatSQLValue(val interface{}) string {
+	switch v := val.(type) {
+	case nil:
+		return "NULL"
+	case string:
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+	case int, int64, float64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		if v {
+			return "1"
+		}
+		return "0"
+	default:
+		return fmt.Sprintf("'%v'", v)
+	}
+}
+
 // ============================================================================
 // SQL Query Utilities
 // ============================================================================
