@@ -418,26 +418,119 @@ Rolls back the transaction.
 
 #### Table Management
 
-##### `create_table(table, columns)`
+##### `create_table(table, columns, constraints?, indexes?)`
 
-Creates a new table with specified column definitions.
+Creates a new table with specified column definitions, optional table constraints, and indexes.
 
 **Parameters:**
 
 - `table` (string): Name of the table to create
 - `columns` (dict): Dictionary mapping column names to their definitions
+- `constraints` (list, optional): List of table-level constraint SQL strings
+- `indexes` (list, optional): List of indexes to create
+
+**Column Definitions:**
+
+Columns can be defined in two ways:
+
+1. **Simple string definition** (backward compatible):
+   ```python
+   "column_name": "DATA_TYPE CONSTRAINTS"
+   ```
+
+2. **Structured dictionary definition**:
+   ```python
+   "column_name": {
+       "type": "DATA_TYPE",           # Required: SQLite data type
+       "primary_key": True,           # Optional: PRIMARY KEY constraint
+       "autoincrement": True,         # Optional: AUTOINCREMENT (INTEGER PRIMARY KEY only)
+       "not_null": True,             # Optional: NOT NULL constraint
+       "unique": True,               # Optional: UNIQUE constraint
+       "default": "value"            # Optional: DEFAULT value
+   }
+   ```
+
+**Table Constraints:**
+
+Optional list of table-level constraints as SQL strings:
+- `"FOREIGN KEY (column) REFERENCES table(column) ON DELETE CASCADE"`
+- `"CHECK (condition)"`
+- `"UNIQUE (column1, column2)"`
+
+**Indexes:**
+
+Optional list of indexes to create. Each index can be:
+- String: Single column name (e.g., `"column_name"`)
+- List: Multiple column names for composite index (e.g., `["col1", "col2"]`)
+
+Index names are auto-generated as `idx_table_column` or `idx_table_col1_col2`.
 
 **Returns:** None
 
-**Example:**
+**Examples:**
 
 ```python
-db.create_table("products", {
+# Simple string definitions (backward compatible)
+db.create_table("users", {
     "id": "INTEGER PRIMARY KEY",
     "name": "TEXT NOT NULL",
-    "price": "REAL DEFAULT 0.0",
-    "description": "TEXT",
+    "email": "TEXT UNIQUE"
+})
+
+# Structured column definitions
+db.create_table("users", {
+    "id": {
+        "type": "INTEGER",
+        "primary_key": True,
+        "autoincrement": True
+    },
+    "username": {
+        "type": "TEXT",
+        "not_null": True,
+        "unique": True
+    },
+    "email": {
+        "type": "TEXT",
+        "not_null": True
+    },
+    "age": {
+        "type": "INTEGER",
+        "default": 0
+    },
+    "is_active": {
+        "type": "BOOLEAN",
+        "default": True
+    }
+})
+
+# With table constraints and indexes
+db.create_table("posts", {
+    "id": "INTEGER PRIMARY KEY",
+    "user_id": "INTEGER NOT NULL",
+    "title": "TEXT NOT NULL",
+    "content": "TEXT",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+}, constraints=[
+    "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+    "CHECK (length(title) > 0)"
+], indexes=[
+    "user_id",                    # Single column index
+    "created_at",                 # Another single column index
+    ["user_id", "created_at"]     # Composite index
+])
+
+# Mixed definitions (string + structured)
+db.create_table("products", {
+    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # String definition
+    "name": {                                   # Structured definition
+        "type": "TEXT",
+        "not_null": True
+    },
+    "price": "REAL DEFAULT 0.0",               # String definition
+    "category": {                              # Structured definition
+        "type": "TEXT",
+        "default": "general"
+    }
 })
 ```
 
