@@ -347,15 +347,15 @@ func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args 
 	resultList := &starlark.List{}
 	for rows.Next() {
 		var name string
-		var sql string
-		if err := rows.Scan(&name, &sql); err != nil {
+		var sqlStmt string
+		if err := rows.Scan(&name, &sqlStmt); err != nil {
 			return nil, fmt.Errorf("failed to scan index info: %w", err)
 		}
 
 		// Create index info dict
 		idxDict := starlark.NewDict(2)
 		idxDict.SetKey(starlark.String("name"), starlark.String(name))
-		idxDict.SetKey(starlark.String("sql"), starlark.String(sql))
+		idxDict.SetKey(starlark.String("sql"), starlark.String(sqlStmt))
 
 		// Append to result list
 		if err := resultList.Append(idxDict); err != nil {
