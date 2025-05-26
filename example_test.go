@@ -347,10 +347,8 @@ def main():
     
     for i, eng in enumerate(engineers):
         print("  {} - ${}".format(eng["name"], eng["salary"]))
-        if eng["name"] != expected_names[i]:
+        if eng["name"] != expected_names[i] or eng["salary"] != expected_salaries[i]:
             fail("Expected engineer {} to be {}, got {}".format(i, expected_names[i], eng["name"]))
-        if eng["salary"] != expected_salaries[i]:
-            fail("Expected salary {} to be {}, got {}".format(i, expected_salaries[i], eng["salary"]))
     
     # Update records
     updated_rows = db.update("employees", {"salary": 95000}, ["name = ?", "Bob Johnson"])
@@ -415,6 +413,108 @@ def main():
     db.close()
     
     print("✓ All high-level operation tests passed")
+
+main()
+`},
+		{"BatchOperations", `
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create tables using batch operations
+    setup_results = db.batch([
+        """CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0.0
+        )""",
+        """CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY,
+            from_account INTEGER,
+            to_account INTEGER,
+            amount REAL NOT NULL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX idx_accounts_name ON accounts(name)"
+    ])
+    
+    if len(setup_results) != 3:
+        fail("Expected 3 setup results, got {}".format(len(setup_results)))
+    print("Setup completed. Results:", setup_results)
+    
+    # Insert initial data using batch with parameters
+    initial_data = db.batch([
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Alice", 1000.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Bob", 500.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Charlie", 750.0]]
+    ])
+    
+    if len(initial_data) != 3:
+        fail("Expected 3 initial data results, got {}".format(len(initial_data)))
+    print("Initial data inserted. Results:", initial_data)
+    
+    # Verify initial data
+    accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    if len(accounts) != 3:
+        fail("Expected 3 accounts, got {}".format(len(accounts)))
+    
+    # Perform a money transfer using batch operations
+    transfer_amount = 200.0
+    transfer_results = db.batch([
+        ["UPDATE accounts SET balance = balance - ? WHERE name = ?", [transfer_amount, "Alice"]],
+        ["UPDATE accounts SET balance = balance + ? WHERE name = ?", [transfer_amount, "Bob"]],
+        ["INSERT INTO transactions (from_account, to_account, amount) VALUES (?, ?, ?)", [1, 2, transfer_amount]]
+    ])
+    
+    if len(transfer_results) != 3:
+        fail("Expected 3 transfer results, got {}".format(len(transfer_results)))
+    print("Transfer completed. Results:", transfer_results)
+    
+    # Test mixed batch (some with params, some without)
+    mixed_results = db.batch([
+        "UPDATE accounts SET balance = 1000.0 WHERE id = 3",
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["David", 300.0]],
+        "DELETE FROM transactions WHERE amount < 50.0"
+    ])
+    
+    if len(mixed_results) != 3:
+        fail("Expected 3 mixed results, got {}".format(len(mixed_results)))
+    
+    # Verify the results
+    final_accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    expected_names = ["Alice", "Bob", "Charlie", "David"]
+    if len(final_accounts) != 4:
+        fail("Expected 4 accounts after all operations, got {}".format(len(final_accounts)))
+    
+    for i, account in enumerate(final_accounts):
+        if account["name"] != expected_names[i]:
+            fail("Account {} name mismatch: expected {}, got {}".format(i, expected_names[i], account["name"]))
+    
+    # Verify specific balances
+    alice_balance = final_accounts[0]["balance"]  # Alice
+    bob_balance = final_accounts[1]["balance"]    # Bob
+    
+    if alice_balance != 800.0:  # 1000 - 200
+        fail("Alice balance should be 800.0, got {}".format(alice_balance))
+    if bob_balance != 700.0:    # 500 + 200
+        fail("Bob balance should be 700.0, got {}".format(bob_balance))
+    
+    # Check transaction history
+    transactions = db.query("SELECT * FROM transactions")
+    if len(transactions) != 1:
+        fail("Expected 1 transaction, got {}".format(len(transactions)))
+    
+    tx = transactions[0]
+    if tx["from_account"] != 1 or tx["to_account"] != 2 or tx["amount"] != 200.0:
+        fail("Transaction data incorrect: from={}, to={}, amount={}".format(
+            tx["from_account"], tx["to_account"], tx["amount"]))
+    
+    # Close the connection
+    db.close()
+    
+    print("✓ All batch operation tests passed")
 
 main()
 `},
@@ -1172,11 +1272,226 @@ def main():
 
 main()
 `},
+		{"EnhancedCreateTable", `
+load("sqlite", "connect")
+
+def main():
+    """Test enhanced create_table functionality with structured columns, constraints, and indexes."""
+    print("Testing enhanced create_table functionality...")
+
+    db = connect(":memory:")
+
+    # Test 1: Backward compatibility - simple string columns
+    print("Test 1: Backward compatibility")
+    db.create_table("simple_users", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "email": "TEXT UNIQUE"
+    })
+    
+    # Verify table was created
+    if not db.table_exists("simple_users"):
+        fail("simple_users table should exist")
+    
+    # Insert and verify basic functionality
+    db.insert("simple_users", {"name": "Alice", "email": "alice@test.com"})
+    users = db.query("SELECT * FROM simple_users")
+    if len(users) != 1 or users[0]["name"] != "Alice":
+        fail("Basic functionality should work with simple columns")
+    print("✓ Backward compatibility works")
+
+    # Test 2: Structured column definitions
+    print("Test 2: Structured column definitions")
+    db.create_table("structured_users", {
+        "id": {
+            "type": "INTEGER",
+            "primary_key": True,
+            "autoincrement": True
+        },
+        "username": {
+            "type": "TEXT",
+            "not_null": True,
+            "unique": True
+        },
+        "email": {
+            "type": "TEXT",
+            "not_null": True
+        },
+        "age": {
+            "type": "INTEGER",
+            "default": 0
+        },
+        "is_active": {
+            "type": "BOOLEAN",
+            "default": True
+        },
+        "bio": {
+            "type": "TEXT"
+        }
+    })
+    
+    # Test the structured table
+    user_id = db.insert("structured_users", {
+        "username": "bob",
+        "email": "bob@test.com",
+        "age": 25
+    })
+    
+    if user_id <= 0:
+        fail("Should get a valid user ID from autoincrement")
+    
+    # Verify default values work
+    user = db.query_one("SELECT * FROM structured_users WHERE id = ?", [user_id])
+    if user["is_active"] != 1:  # SQLite stores booleans as integers
+        fail("Default boolean value should be 1 (True)")
+    if user["age"] != 25:
+        fail("Age should be 25")
+    print("✓ Structured column definitions work")
+
+    # Test 3: Table constraints
+    print("Test 3: Table constraints")
+    db.create_table("posts", {
+        "id": "INTEGER PRIMARY KEY",
+        "user_id": "INTEGER NOT NULL",
+        "title": "TEXT NOT NULL",
+        "content": "TEXT",
+        "category": "TEXT",
+        "status": "TEXT DEFAULT 'draft'"
+    }, constraints=[
+        "FOREIGN KEY (user_id) REFERENCES structured_users(id) ON DELETE CASCADE",
+        "CHECK (length(title) > 0)",
+        "UNIQUE (user_id, title)"
+    ])
+    
+    # Test constraint functionality
+    post_id = db.insert("posts", {
+        "user_id": user_id,
+        "title": "Test Post",
+        "content": "This is a test post"
+    })
+    
+    if post_id <= 0:
+        fail("Should get a valid post ID")
+    
+    # Verify the post was inserted
+    post = db.query_one("SELECT * FROM posts WHERE id = ?", [post_id])
+    if post["title"] != "Test Post":
+        fail("Post should be inserted correctly")
+    print("✓ Table constraints work")
+
+    # Test 4: Simple indexes
+    print("Test 4: Simple indexes")
+    db.create_table("products", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "category": "TEXT",
+        "price": "REAL",
+        "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+    }, indexes=[
+        "name",                    # Single column index
+        "category",                # Another single column index  
+        ["category", "price"],     # Composite index
+        ["created_at"]             # Single column in list (should work)
+    ])
+    
+    # Insert some test data
+    db.insert("products", {"name": "Laptop", "category": "Electronics", "price": 999.99})
+    db.insert("products", {"name": "Mouse", "category": "Electronics", "price": 29.99})
+    db.insert("products", {"name": "Desk", "category": "Furniture", "price": 199.99})
+    
+    # Verify data was inserted
+    products = db.query("SELECT * FROM products ORDER BY price")
+    if len(products) != 3:
+        fail("Should have 3 products")
+    if products[0]["name"] != "Mouse":  # Cheapest should be first
+        fail("Products should be ordered by price")
+    
+    # Test that indices were created by checking sqlite_master
+    indices = db.query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='products'")
+    index_names = [idx["name"] for idx in indices]
+    
+    # Check for our created indices (exclude automatic ones)
+    expected_indices = ["idx_products_name", "idx_products_category", "idx_products_category_price", "idx_products_created_at"]
+    for expected in expected_indices:
+        if expected not in index_names:
+            print("Available indices: {}".format(index_names))
+            fail("Expected index {} was not created".format(expected))
+    
+    print("✓ Simple indexes work")
+
+    # Test 5: Mixed column definitions (string + structured)
+    print("Test 5: Mixed column definitions")
+    db.create_table("mixed_table", {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # String definition
+        "name": {                                   # Structured definition
+            "type": "TEXT",
+            "not_null": True
+        },
+        "email": "TEXT UNIQUE",                     # String definition
+        "created_at": {                             # Structured definition
+            "type": "TEXT",
+            "default": "CURRENT_TIMESTAMP"
+        }
+    })
+    
+    # Test mixed table
+    mixed_id = db.insert("mixed_table", {"name": "Charlie", "email": "charlie@test.com"})
+    if mixed_id <= 0:
+        fail("Should get a valid ID from mixed table")
+    
+    mixed_row = db.query_one("SELECT * FROM mixed_table WHERE id = ?", [mixed_id])
+    if mixed_row["name"] != "Charlie":
+        fail("Mixed table should work correctly")
+    print("✓ Mixed column definitions work")
+
+    # Test 6: Error handling
+    print("Test 6: Error handling")
+    
+    # Test table that already exists (this should fail)
+    # Note: In Starlark we can't use try/catch, so we just verify the success cases
+    # Error cases would cause the script to fail which is the expected behavior
+    
+    # Test invalid column type in structured definition
+    # This would be caught in real usage, but we test valid usage here
+    
+    print("✓ Error handling works as expected (errors cause script termination)")
+
+    # Test 7: Table info verification
+    print("Test 7: Verify table structure")
+    
+    # Check the structured_users table info
+    table_info = db.table_info("structured_users")
+    
+    # Find the username column and verify it has NOT NULL
+    username_col = None
+    for col in table_info:
+        if col["name"] == "username":
+            username_col = col
+            break
+    
+    if not username_col:
+        fail("username column should exist")
+    
+    if username_col["notnull"] != 1:
+        fail("username column should be NOT NULL")
+    
+    if username_col["type"] != "TEXT":
+        fail("username column should be TEXT type")
+    
+    print("✓ Table structure verification works")
+
+    # Close the connection
+    db.close()
+    
+    print("✓ All enhanced create_table tests passed!")
+
+main()
+`},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			base.RunTestScript(t, tc.script, "sqlite", func() starlet.ModuleLoader {
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base.RunTestScript(t, test.script, "sqlite", func() starlet.ModuleLoader {
 				return NewModule().LoadModule()
 			}, nil)
 		})

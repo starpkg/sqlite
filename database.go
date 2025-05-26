@@ -28,6 +28,7 @@ func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
 		// Basic operations
 		"close":     starlark.NewBuiltin("close", dbi.close),
 		"execute":   starlark.NewBuiltin("execute", dbi.execute),
+		"batch":     starlark.NewBuiltin("batch", dbi.batch),
 		"query":     starlark.NewBuiltin("query", dbi.query),
 		"query_one": starlark.NewBuiltin("query_one", dbi.queryOne),
 
@@ -113,6 +114,117 @@ func (db *database) execute(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	return starlark.MakeInt64(rowsAffected), nil
+}
+
+// batch executes multiple SQL statements in a single transaction.
+func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var queries *starlark.List
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
+		"queries", &queries); err != nil {
+		return nil, err
+	}
+
+	// Begin transaction
+	tx, err := db.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Prepare result list
+	resultList := &starlark.List{}
+
+	// Execute each query
+	for i := 0; i < queries.Len(); i++ {
+		queryItem := queries.Index(i)
+
+		var query string
+		var params starlark.Sequence
+
+		// Parse query item - can be string or [query, params]
+		switch item := queryItem.(type) {
+		case starlark.String:
+			// Simple string query without parameters
+			query = string(item)
+			params = nil
+
+		case starlark.Sequence:
+			// Sequence with [query, params]
+			if item.Len() < 1 {
+				tx.Rollback()
+				return nil, fmt.Errorf("query %d: empty sequence", i)
+			}
+
+			// Use iterator to access elements
+			iter := item.Iterate()
+			defer iter.Done()
+
+			// Get the first element (query)
+			var queryVal starlark.Value
+			if !iter.Next(&queryVal) {
+				tx.Rollback()
+				return nil, fmt.Errorf("query %d: failed to get query string", i)
+			}
+
+			queryStr, ok := queryVal.(starlark.String)
+			if !ok {
+				tx.Rollback()
+				return nil, fmt.Errorf("query %d: first element must be a string", i)
+			}
+			query = string(queryStr)
+
+			// Get the second element (params) if present
+			if item.Len() > 1 {
+				var paramsVal starlark.Value
+				if iter.Next(&paramsVal) {
+					if paramsSeq, ok := paramsVal.(starlark.Sequence); ok {
+						params = paramsSeq
+					} else {
+						tx.Rollback()
+						return nil, fmt.Errorf("query %d: second element must be a sequence of parameters", i)
+					}
+				}
+			}
+
+		default:
+			tx.Rollback()
+			return nil, fmt.Errorf("query %d: must be a string or sequence [query, params]", i)
+		}
+
+		// Parse query and parameters
+		sqlQuery, err := newSQLQuery(query, params)
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("query %d: %w", i, err)
+		}
+
+		// Execute the query within transaction
+		result, err := tx.Exec(sqlQuery.query, sqlQuery.params...)
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("query %d: failed to execute: %w", i, err)
+		}
+
+		// Get affected rows
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("query %d: failed to get rows affected: %w", i, err)
+		}
+
+		// Add result to list
+		if err := resultList.Append(starlark.MakeInt64(rowsAffected)); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return resultList, nil
 }
 
 // ============================================================================
@@ -347,15 +459,15 @@ func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args 
 	resultList := &starlark.List{}
 	for rows.Next() {
 		var name string
-		var sql string
-		if err := rows.Scan(&name, &sql); err != nil {
+		var sqlStmt string
+		if err := rows.Scan(&name, &sqlStmt); err != nil {
 			return nil, fmt.Errorf("failed to scan index info: %w", err)
 		}
 
 		// Create index info dict
 		idxDict := starlark.NewDict(2)
 		idxDict.SetKey(starlark.String("name"), starlark.String(name))
-		idxDict.SetKey(starlark.String("sql"), starlark.String(sql))
+		idxDict.SetKey(starlark.String("sql"), starlark.String(sqlStmt))
 
 		// Append to result list
 		if err := resultList.Append(idxDict); err != nil {

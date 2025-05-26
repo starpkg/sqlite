@@ -8,6 +8,7 @@ A comprehensive Go module that brings the power of SQLite database operations to
 ## Features
 
 - ✅ Low-level SQL execution with prepared statements and parameterized queries
+- ✅ Batch operations for executing multiple statements in a single transaction
 - ✅ High-level table and record operations for common database tasks
 - ✅ Transaction management with begin/commit/rollback support
 - ✅ SQL injection prevention through parameterized queries
@@ -192,6 +193,46 @@ rows_affected = db.execute(
     "INSERT INTO users (name, email) VALUES (?, ?)",
     ["Alice", "alice@example.com"]
 )
+```
+
+##### `batch(queries)`
+
+Executes multiple SQL statements in a single transaction.
+
+**Parameters:**
+
+- `queries` (list): List of queries to execute. Each item can be:
+  - A string (SQL statement without parameters)
+  - A list/tuple with [query, params] (SQL statement with parameters)
+
+**Returns:** List of integers representing affected rows for each query
+
+**Example:**
+
+```python
+# Simple batch with string queries
+results = db.batch([
+    "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')",
+    "INSERT INTO users (name, email) VALUES ('Bob', 'bob@example.com')",
+    "UPDATE users SET active = 1"
+])
+
+# Batch with parameterized queries
+results = db.batch([
+    ["INSERT INTO users (name, email) VALUES (?, ?)", ["Charlie", "charlie@example.com"]],
+    ["UPDATE users SET last_login = ? WHERE id = ?", ["2023-08-15", 1]],
+    ["DELETE FROM users WHERE active = ?", [0]]
+])
+
+# Mixed batch (some with params, some without)
+results = db.batch([
+    "CREATE INDEX idx_users_email ON users(email)",
+    ["INSERT INTO users (name, email) VALUES (?, ?)", ["David", "david@example.com"]],
+    "VACUUM"
+])
+
+# All operations are executed in a single transaction
+# If any operation fails, the entire batch is rolled back
 ```
 
 ##### `query(query, params?)`
@@ -418,26 +459,119 @@ Rolls back the transaction.
 
 #### Table Management
 
-##### `create_table(table, columns)`
+##### `create_table(table, columns, constraints?, indexes?)`
 
-Creates a new table with specified column definitions.
+Creates a new table with specified column definitions, optional table constraints, and indexes.
 
 **Parameters:**
 
 - `table` (string): Name of the table to create
 - `columns` (dict): Dictionary mapping column names to their definitions
+- `constraints` (list, optional): List of table-level constraint SQL strings
+- `indexes` (list, optional): List of indexes to create
+
+**Column Definitions:**
+
+Columns can be defined in two ways:
+
+1. **Simple string definition** (backward compatible):
+   ```python
+   "column_name": "DATA_TYPE CONSTRAINTS"
+   ```
+
+2. **Structured dictionary definition**:
+   ```python
+   "column_name": {
+       "type": "DATA_TYPE",           # Required: SQLite data type
+       "primary_key": True,           # Optional: PRIMARY KEY constraint
+       "autoincrement": True,         # Optional: AUTOINCREMENT (INTEGER PRIMARY KEY only)
+       "not_null": True,             # Optional: NOT NULL constraint
+       "unique": True,               # Optional: UNIQUE constraint
+       "default": "value"            # Optional: DEFAULT value
+   }
+   ```
+
+**Table Constraints:**
+
+Optional list of table-level constraints as SQL strings:
+- `"FOREIGN KEY (column) REFERENCES table(column) ON DELETE CASCADE"`
+- `"CHECK (condition)"`
+- `"UNIQUE (column1, column2)"`
+
+**Indexes:**
+
+Optional list of indexes to create. Each index can be:
+- String: Single column name (e.g., `"column_name"`)
+- List: Multiple column names for composite index (e.g., `["col1", "col2"]`)
+
+Index names are auto-generated as `idx_table_column` or `idx_table_col1_col2`.
 
 **Returns:** None
 
-**Example:**
+**Examples:**
 
 ```python
-db.create_table("products", {
+# Simple string definitions (backward compatible)
+db.create_table("users", {
     "id": "INTEGER PRIMARY KEY",
     "name": "TEXT NOT NULL",
-    "price": "REAL DEFAULT 0.0",
-    "description": "TEXT",
+    "email": "TEXT UNIQUE"
+})
+
+# Structured column definitions
+db.create_table("users", {
+    "id": {
+        "type": "INTEGER",
+        "primary_key": True,
+        "autoincrement": True
+    },
+    "username": {
+        "type": "TEXT",
+        "not_null": True,
+        "unique": True
+    },
+    "email": {
+        "type": "TEXT",
+        "not_null": True
+    },
+    "age": {
+        "type": "INTEGER",
+        "default": 0
+    },
+    "is_active": {
+        "type": "BOOLEAN",
+        "default": True
+    }
+})
+
+# With table constraints and indexes
+db.create_table("posts", {
+    "id": "INTEGER PRIMARY KEY",
+    "user_id": "INTEGER NOT NULL",
+    "title": "TEXT NOT NULL",
+    "content": "TEXT",
     "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+}, constraints=[
+    "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+    "CHECK (length(title) > 0)"
+], indexes=[
+    "user_id",                    # Single column index
+    "created_at",                 # Another single column index
+    ["user_id", "created_at"]     # Composite index
+])
+
+# Mixed definitions (string + structured)
+db.create_table("products", {
+    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",  # String definition
+    "name": {                                   # Structured definition
+        "type": "TEXT",
+        "not_null": True
+    },
+    "price": "REAL DEFAULT 0.0",               # String definition
+    "category": {                              # Structured definition
+        "type": "TEXT",
+        "default": "general"
+    }
 })
 ```
 
@@ -987,6 +1121,85 @@ def main():
 main()
 ```
 
+### Batch Operations Example
+
+```python
+load("sqlite", "connect")
+
+def main():
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create tables using batch operations
+    setup_results = db.batch([
+        """CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            balance REAL NOT NULL DEFAULT 0.0
+        )""",
+        """CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY,
+            from_account INTEGER,
+            to_account INTEGER,
+            amount REAL NOT NULL,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX idx_accounts_name ON accounts(name)"
+    ])
+    
+    print("Setup completed. Results:", setup_results)
+    
+    # Insert initial data using batch with parameters
+    initial_data = db.batch([
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Alice", 1000.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Bob", 500.0]],
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Charlie", 750.0]]
+    ])
+    
+    print("Initial data inserted. Results:", initial_data)
+    
+    # Perform a money transfer using batch operations
+    transfer_amount = 200.0
+    transfer_results = db.batch([
+        ["UPDATE accounts SET balance = balance - ? WHERE name = ?", [transfer_amount, "Alice"]],
+        ["UPDATE accounts SET balance = balance + ? WHERE name = ?", [transfer_amount, "Bob"]],
+        ["INSERT INTO transactions (from_account, to_account, amount) VALUES (?, ?, ?)", [1, 2, transfer_amount]]
+    ])
+    
+    print("Transfer completed. Results:", transfer_results)
+    
+    # Mixed batch operations (some with params, some without)
+    mixed_results = db.batch([
+        "UPDATE accounts SET balance = 1000.0 WHERE id = 3",  # String query
+        ["INSERT INTO accounts (name, balance) VALUES (?, ?)", ["David", 300.0]],  # Parameterized
+        "DELETE FROM transactions WHERE amount < 50.0"  # String query
+    ])
+    
+    print("Mixed operations completed. Results:", mixed_results)
+    
+    # Verify the results
+    accounts = db.query("SELECT * FROM accounts ORDER BY name")
+    print("\nFinal account balances:")
+    for account in accounts:
+        print("  {}: ${}".format(account["name"], account["balance"]))
+    
+    # Check transaction history
+    transactions = db.query("SELECT * FROM transactions")
+    print("\nTransaction history:")
+    for tx in transactions:
+        print("  From account {} to account {}: ${}".format(
+            tx["from_account"], tx["to_account"], tx["amount"]))
+    
+    # All operations within each batch are executed in a single transaction
+    # If any operation fails, the entire batch is rolled back
+    
+    db.close()
+    
+    print("\n✓ Batch operations example completed successfully!")
+
+main()
+```
+
 ### Multi-Database Example
 
 ```python
@@ -1211,6 +1424,7 @@ fi
 
 ## Performance Tips
 
+- Use **batch operations** for multiple related statements in a single transaction
 - Use **transactions** for multiple related operations
 - Use **prepared statements** for repeated operations
 - Consider using **WAL mode** for concurrent access
@@ -1218,19 +1432,27 @@ fi
 - **Close connections** when done to free resources
 
 ```python
-# Method 1: Use insert_many for bulk inserts (recommended, automatically uses transactions)
+# Method 1: Use batch operations for multiple statements (recommended for mixed operations)
+db.batch([
+    "CREATE TABLE temp_users (id INTEGER, name TEXT)",
+    ["INSERT INTO temp_users VALUES (?, ?)", [1, "Alice"]],
+    ["INSERT INTO temp_users VALUES (?, ?)", [2, "Bob"]],
+    "CREATE INDEX idx_temp_users_name ON temp_users(name)"
+])
+
+# Method 2: Use insert_many for bulk inserts (recommended, automatically uses transactions)
 db.insert_many("users", [
     {"name": user["name"], "email": user["email"]} 
     for user in large_user_list
 ])
 
-# Method 2: Use prepared statements for repeated operations
+# Method 3: Use prepared statements for repeated operations
 stmt = db.prepare("INSERT INTO users (name, email) VALUES (?, ?)")
 for user_data in large_user_list:
     stmt.execute([user_data["name"], user_data["email"]])
 stmt.close()
 
-# Method 3: Manual transaction for complex operations
+# Method 4: Manual transaction for complex operations
 tx = db.begin()
 for user_data in large_user_list:
     tx.execute("INSERT INTO users (name, email) VALUES (?, ?)", 
