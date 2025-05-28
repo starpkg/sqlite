@@ -1028,7 +1028,7 @@ load("sqlite", "connect", "register_function")
 def main():
     # Register a function that accepts variable arguments
     def greatest(*args):
-        valid_args = [arg for arg in args if arg is not None]
+        valid_args = [arg for arg in args if arg != None]
         return max(valid_args) if valid_args else None
     
     register_function("GREATEST", greatest)  # variadic by default
@@ -1055,7 +1055,7 @@ def main():
         if not args:
             return {}
         
-        non_null = [arg for arg in args if arg is not None]
+        non_null = [arg for arg in args if arg != None]
         if not non_null:
             return {}
         
@@ -1087,7 +1087,7 @@ load("sqlite", "connect", "register_function")
 def main():
     # Register multiple string functions
     register_function("REVERSE_STR", lambda s: s[::-1] if s else "", num_args=1)
-    register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg is not None]))
+    register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
     
     db = connect(":memory:")
     db.execute("CREATE TABLE users (first_name TEXT, last_name TEXT)")

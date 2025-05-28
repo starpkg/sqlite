@@ -85,7 +85,7 @@ load("sqlite", "connect", "register_function")
 
 # Register a function that accepts variable arguments
 def greatest(*args):
-    valid_args = [arg for arg in args if arg is not None]
+    valid_args = [arg for arg in args if arg != None]
     return max(valid_args) if valid_args else None
 
 register_function("GREATEST", greatest)  # num_args=None (default, means variadic)
@@ -103,7 +103,7 @@ load("sqlite", "connect", "register_function")
 
 # Register functions once
 register_function("DOUBLE", lambda x: x * 2, num_args=1)
-register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg is not None]))
+register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
 
 # Functions are available to ALL connections opened after registration
 db1 = connect(":memory:")
@@ -392,7 +392,7 @@ def test_variadic_function():
     load("sqlite", "connect", "register_function")
     
     def concat_all(*args):
-        return "|".join([str(arg) for arg in args if arg is not None])
+        return "|".join([str(arg) for arg in args if arg != None])
     
     register_function("CONCAT_ALL", concat_all)
     
