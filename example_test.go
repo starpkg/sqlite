@@ -1607,6 +1607,194 @@ def main():
 
 main()
 `},
+		{"CustomSQLFunctionErrorCases", `
+# Test error scenarios for custom SQL function registration
+# This test is designed to fail with specific error conditions
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing error scenarios for custom SQL function registration")
+    
+    # Test 1: Try to register something that's not a function (should fail)
+    print("Test 1: Register non-callable as function")
+    register_function("NOT_A_FUNC", "this is not a function")
+    
+    # This should never be reached due to the error above
+    print("ERROR: Should have failed when registering non-callable")
+
+main()
+`},
+		{"CustomSQLFunctionInvalidName", `
+# Test invalid function names in registration
+# This test is designed to fail with specific error conditions
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing invalid function name registration")
+    
+    # Test: Try to register function with empty name (should fail)
+    print("Test: Register function with empty name")
+    register_function("", lambda x: x)
+    
+    # This should never be reached due to the error above
+    print("ERROR: Should have failed when registering function with empty name")
+
+main()
+`},
+		{"CustomSQLFunctionDuplicateRegistration", `
+# Test duplicate function registration
+# This test is designed to fail with specific error conditions
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing duplicate function registration")
+    
+    # Register a function successfully first
+    register_function("TEST_FUNC", lambda x: x * 2)
+    print("First registration successful")
+    
+    # Try to register the same function name again (should fail)
+    print("Test: Register function with duplicate name")
+    register_function("TEST_FUNC", lambda x: x * 3)
+    
+    # This should never be reached due to the error above
+    print("ERROR: Should have failed when registering duplicate function")
+
+main()
+`},
+		{"CustomSQLFunctionInvalidNumArgs", `
+# Test invalid num_args parameter
+# This test is designed to fail with specific error conditions
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing invalid num_args parameter")
+    
+    # Test: Try to register function with invalid num_args (should fail)
+    print("Test: Register function with invalid num_args (-2)")
+    register_function("BAD_ARGS", lambda x: x, num_args=-2)
+    
+    # This should never be reached due to the error above
+    print("ERROR: Should have failed when registering function with invalid num_args")
+
+main()
+`},
+		{"CustomSQLFunctionRuntimeError", `
+# Test runtime errors in custom functions
+# This test shows what happens when a registered function fails during execution
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing runtime errors in custom functions")
+    
+    # Register a function that will fail when called
+    def failing_function(x):
+        if x == 42:
+            fail("This function intentionally fails when x is 42")
+        return x * 2
+    
+    register_function("FAILING_FUNC", failing_function, num_args=1)
+    print("Registered function that will fail on specific input")
+    
+    # Open database and create test data
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (id INTEGER, value INTEGER)")
+    db.execute("INSERT INTO test VALUES (1, 10)")
+    db.execute("INSERT INTO test VALUES (2, 42)")  # This will cause the function to fail
+    db.execute("INSERT INTO test VALUES (3, 20)")
+    
+    # This query should fail when it hits the row with value 42
+    print("Running query that will trigger function failure...")
+    result = db.query("SELECT id, FAILING_FUNC(value) as result FROM test ORDER BY id")
+    
+    # This should never be reached due to the SQL function error
+    print("ERROR: Query should have failed due to function error")
+    for row in result:
+        print("Row: {}".format(row))
+
+main()
+`},
+		{"CustomSQLFunctionNonExistent", `
+# Test calling non-existent SQL function
+# This test shows what happens when calling a function that was never registered
+
+load("sqlite", "connect")
+
+def main():
+    print("Testing calling non-existent SQL function")
+    
+    # Try to use a function that was never registered
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (id INTEGER, value INTEGER)")
+    db.execute("INSERT INTO test VALUES (1, 10)")
+    
+    # This query should fail because NON_EXISTENT_FUNC was never registered
+    print("Running query with non-existent function...")
+    result = db.query("SELECT id, NON_EXISTENT_FUNC(value) as result FROM test")
+    
+    # This should never be reached due to the SQL error
+    print("ERROR: Query should have failed due to non-existent function")
+    for row in result:
+        print("Row: {}".format(row))
+
+main()
+`},
+		{"CustomSQLFunctionTypeError", `
+# Test type-related errors in custom functions
+# This test shows what happens when a function receives unexpected types
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing type-related errors in custom functions")
+    
+    # Register a function that expects numbers but will get strings
+    def math_function(x, y):
+        # This will fail if x or y are not numbers
+        return x + y  # In Starlark, you can't add string to number
+    
+    register_function("MATH_FUNC", math_function, num_args=2)
+    print("Registered math function that expects numbers")
+    
+    # Open database and create test data with mixed types
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (id INTEGER, num_val INTEGER, text_val TEXT)")
+    db.execute("INSERT INTO test VALUES (1, 10, 'hello')")
+    
+    # This query should fail when trying to add number + string
+    print("Running query that will cause type error...")
+    result = db.query("SELECT id, MATH_FUNC(num_val, text_val) as result FROM test")
+    
+    # This should never be reached due to the type error
+    print("ERROR: Query should have failed due to type error")
+    for row in result:
+        print("Row: {}".format(row))
+
+main()
+`},
+		{"CustomSQLFunctionInvalidParameterType", `
+# Test registering function with invalid parameter types
+# This test is designed to fail with specific error conditions
+
+load("sqlite", "connect", "register_function")
+
+def main():
+    print("Testing registration with invalid parameter types")
+    
+    # Test: Try to register function with non-integer num_args (should fail)
+    print("Test: Register function with string num_args")
+    register_function("BAD_PARAM", lambda x: x, num_args="invalid")
+    
+    # This should never be reached due to the error above
+    print("ERROR: Should have failed when registering function with invalid num_args type")
+
+main()
+`},
 	}
 
 	for _, test := range tests {

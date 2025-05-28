@@ -15,6 +15,7 @@ A comprehensive Go module that brings the power of SQLite database operations to
 - ✅ File-based and in-memory databases with flexible connection options
 - ✅ ATTACH/DETACH database support for multi-database operations
 - ✅ Schema introspection for table information and indices
+- ✅ Custom SQL functions for extending SQLite with Starlark logic
 - ✅ Automatic type conversion between SQLite and Starlark types
 - ✅ Configurable database settings (journal mode, synchronous mode, etc.)
 - ✅ Compatible with Go 1.18+ and cross-platform support
@@ -943,6 +944,285 @@ print("Indices on users table:")
 for idx in indices:
     print("- {}".format(idx["name"]))
 ```
+
+## Custom SQL Functions
+
+The SQLite module supports registering custom SQL functions written in Starlark that can be called from SQL queries. This feature allows you to extend SQLite with domain-specific logic and complex data processing functions.
+
+**Important**: Custom functions must be registered **before** opening any database connections, as they are registered globally with the SQLite driver.
+
+### Function Registration
+
+#### `register_function(name, func, num_args=None, deterministic=False)`
+
+Registers a custom SQL function that can be called from SQL queries.
+
+**Parameters:**
+
+- `name` (string): The name of the SQL function to register (case-insensitive in SQL)
+- `func` (callable): A Starlark function or lambda that implements the custom logic
+- `num_args` (int, optional): Number of arguments the function accepts
+  - If `None` or not specified: Function is variadic (accepts any number of arguments)
+  - If specified: Function accepts exactly that many arguments
+  - Use `-1` for explicitly variadic functions
+- `deterministic` (bool, optional): Whether the function is deterministic (default: `False`)
+  - `True`: Function always returns the same result for identical inputs (enables SQLite optimizations)
+  - `False`: Function may return different results (e.g., functions using random values or current time)
+
+**Returns:** `None` on success
+
+**Raises:** Error on failure (invalid parameters, duplicate registration, etc.)
+
+### Basic Examples
+
+#### Simple String Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a string trimming function
+    register_function("MY_TRIM", lambda s: s.strip() if s else "")
+    
+    # Open database and use the function
+    db = connect(":memory:")
+    db.execute("CREATE TABLE users (name TEXT)")
+    db.execute("INSERT INTO users VALUES ('  John Doe  ')")
+    
+    result = db.query("SELECT MY_TRIM(name) as clean_name FROM users")
+    print(result)  # [{"clean_name": "John Doe"}]
+    
+    db.close()
+
+main()
+```
+
+#### Mathematical Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a deterministic mathematical function
+    register_function("SQUARE", lambda x: x * x if x else 0, num_args=1, deterministic=True)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE measurements (side REAL)")
+    db.execute("INSERT INTO measurements VALUES (5.0)")
+    
+    # Can create functional indexes with deterministic functions
+    db.execute("CREATE INDEX idx_area ON measurements (SQUARE(side))")
+    result = db.query("SELECT SQUARE(side) as area FROM measurements")
+    print(result)  # [{"area": 25.0}]
+    
+    db.close()
+
+main()
+```
+
+#### Variadic Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that accepts variable arguments
+    def greatest(*args):
+        valid_args = [arg for arg in args if arg is not None]
+        return max(valid_args) if valid_args else None
+    
+    register_function("GREATEST", greatest)  # variadic by default
+    
+    db = connect(":memory:")
+    result = db.query("SELECT GREATEST(1, 5, 3, 9, 2) as max_val")
+    print(result)  # [{"max_val": 9}]
+    
+    db.close()
+
+main()
+```
+
+### Advanced Examples
+
+#### Complex Data Processing
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that returns JSON statistics
+    def get_stats(*args):
+        if not args:
+            return {}
+        
+        non_null = [arg for arg in args if arg is not None]
+        if not non_null:
+            return {}
+        
+        total = sum(non_null)
+        return {
+            "count": len(non_null),
+            "sum": total,
+            "avg": total / len(non_null),
+            "min": min(non_null),
+            "max": max(non_null)
+        }
+    
+    register_function("GET_STATS", get_stats)
+    
+    db = connect(":memory:")
+    result = db.query("SELECT GET_STATS(10.5, 20.3, 15.7) as stats")
+    # Returns: [{"stats": "{\"avg\":15.5,\"count\":3,\"max\":20.3,\"min\":10.5,\"sum\":46.5}"}]
+    
+    db.close()
+
+main()
+```
+
+#### String Manipulation
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register multiple string functions
+    register_function("REVERSE_STR", lambda s: s[::-1] if s else "", num_args=1)
+    register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg is not None]))
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE users (first_name TEXT, last_name TEXT)")
+    db.execute("INSERT INTO users VALUES ('John', 'Doe')")
+    
+    # Use functions in SQL queries
+    result = db.query("""
+        SELECT 
+            CONCAT_WS(' ', first_name, last_name) as full_name,
+            REVERSE_STR(first_name) as reversed_first
+        FROM users
+    """)
+    print(result)  # [{"full_name": "John Doe", "reversed_first": "nhoJ"}]
+    
+    db.close()
+
+main()
+```
+
+### Error Handling
+
+The module provides comprehensive error handling for custom functions:
+
+#### Registration Errors
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # These will cause registration errors:
+    
+    # Empty function name
+    register_function("", lambda x: x)  # Error: function name cannot be empty
+    
+    # Non-callable parameter
+    register_function("NOT_FUNC", "not a function")  # Error: got string, want callable
+    
+    # Invalid num_args
+    register_function("BAD_ARGS", lambda x: x, num_args=-2)  # Error: num_args must be >= -1
+    
+    # Duplicate registration
+    register_function("TEST", lambda x: x)
+    register_function("TEST", lambda x: x * 2)  # Error: function 'TEST' is already registered
+
+main()
+```
+
+#### Runtime Errors
+
+When a custom function fails during SQL execution, the error is propagated as a SQL error:
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that can fail
+    def divide_func(a, b):
+        if b == 0:
+            fail("Division by zero")
+        return a / b
+    
+    register_function("SAFE_DIVIDE", divide_func, num_args=2)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (a REAL, b REAL)")
+    db.execute("INSERT INTO test VALUES (10, 0)")  # Will cause division by zero
+    
+    # This will fail with: "Starlark function execution failed: fail: Division by zero"
+    result = db.query("SELECT SAFE_DIVIDE(a, b) FROM test")
+
+main()
+```
+
+#### Non-Existent Functions
+
+Calling functions that were never registered results in SQL errors:
+
+```python
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (value INTEGER)")
+    db.execute("INSERT INTO test VALUES (42)")
+    
+    # This will fail with: "no such function: UNDEFINED_FUNC"
+    result = db.query("SELECT UNDEFINED_FUNC(value) FROM test")
+
+main()
+```
+
+### Performance Considerations
+
+#### Deterministic Functions
+
+Mark functions as `deterministic=True` when they always return the same result for identical inputs:
+
+```python
+# Good: Pure mathematical functions
+register_function("SQUARE", lambda x: x * x, num_args=1, deterministic=True)
+register_function("FACTORIAL", factorial_func, num_args=1, deterministic=True)
+
+# Bad: Functions with side effects or randomness
+register_function("RANDOM_ID", lambda: random.randint(1, 1000), deterministic=True)  # Wrong!
+register_function("CURRENT_USER", get_current_user, deterministic=True)  # Wrong!
+```
+
+Deterministic functions enable SQLite optimizations:
+- Result caching for identical inputs
+- Constant folding at compile time
+- Functional indexes
+- Better query plan generation
+
+#### Best Practices
+
+- **Register functions at startup** before opening any database connections
+- **Keep functions simple** - complex logic should be done outside SQL
+- **Handle None values gracefully** in function implementations
+- **Use appropriate num_args** for better performance and error checking
+- **Test error conditions** to ensure robust error handling
+
+### Type Conversion
+
+Arguments passed to custom functions are automatically converted from SQLite types to Starlark types, and return values are converted back:
+
+| SQLite → Starlark | Starlark → SQLite |
+|-------------------|-------------------|
+| NULL → None       | None → NULL       |
+| INTEGER → int     | int → INTEGER     |
+| REAL → float      | float → REAL      |
+| TEXT → string     | string → TEXT     |
+| BLOB → bytes      | bytes → BLOB      |
+|                   | bool → INTEGER    |
+|                   | dict → TEXT (JSON)|
+|                   | list → TEXT (JSON)|
 
 ## Type Conversion
 
