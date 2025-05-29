@@ -116,7 +116,8 @@ func newModuleWithOptions(
 func (m *Module) LoadModule() starlet.ModuleLoader {
 	// Prepare methods dictionary
 	additionalFuncs := starlark.StringDict{
-		"connect": starlark.NewBuiltin(ModuleName+".connect", m.connect),
+		"connect":           starlark.NewBuiltin(ModuleName+".connect", m.connect),
+		"register_function": starlark.NewBuiltin(ModuleName+".register_function", registerFunction),
 	}
 
 	// Return the module

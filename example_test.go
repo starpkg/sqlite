@@ -14,7 +14,7 @@ func TestStarlarkScripts(t *testing.T) {
 	moduleFactory := func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
 	}
-	extraModules := []string{}
+	extraModules := []string{"go_idiomatic"}
 
 	// Use the helper function from the base package
 	base.RunStarlarkTests(t, ModuleName, moduleFactory, extraModules, "")
@@ -1484,6 +1484,126 @@ def main():
     db.close()
     
     print("✓ All enhanced create_table tests passed!")
+
+main()
+`},
+		{"CustomSQLFunctions", `
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Test 1: Register simple string function
+    print("Test 1: Simple string function")
+    register_function("EXAMPLE_TRIM", lambda s: s.strip() if s else "")
+    
+    # Test 2: Register mathematical function  
+    print("Test 2: Mathematical function")
+    register_function("EXAMPLE_SQUARE", lambda x: x * x if x else 0, num_args=1, deterministic=True)
+    
+    # Test 3: Register string manipulation function
+    print("Test 3: String manipulation function")
+    register_function("EXAMPLE_REVERSE", lambda s: s[::-1] if s else "", num_args=1)
+    
+    # Test 4: Register variadic function (min of multiple values)
+    print("Test 4: Variadic function")
+    def min_values(*args):
+        """Return minimum value from multiple arguments"""
+        if not args:
+            return None
+        non_null_args = []
+        for arg in args:
+            if arg != None:
+                non_null_args.append(arg)
+        if not non_null_args:
+            return None
+        return min(non_null_args)
+    
+    register_function("EXAMPLE_MIN_OF", min_values, num_args=-1, deterministic=True)
+    
+    # Test 5: Register function that returns complex data as JSON
+    print("Test 5: Complex data function")
+    def get_stats(*args):
+        """Return statistics as JSON string"""
+        sum = 0
+        if not args:
+            return "{}"
+        non_null = []
+        for arg in args:
+            if arg != None:
+                non_null.append(arg)
+                sum += arg
+        if not non_null:
+            return "{}"
+        
+        stats = {
+            "count": len(non_null),
+            "sum": sum,
+            "avg": sum / len(non_null),
+            "min": min(non_null),
+            "max": max(non_null)
+        }
+        return stats  # Will be JSON-encoded automatically
+    
+    register_function("EXAMPLE_STATS", get_stats, num_args=-1)
+    
+    # Now test the functions with actual SQL queries
+    db = connect(":memory:")
+    
+    # Create test table
+    db.execute("CREATE TABLE test_data (id INTEGER, name TEXT, value REAL)")
+    db.execute("INSERT INTO test_data VALUES (1, '  Alice  ', 10.5)")
+    db.execute("INSERT INTO test_data VALUES (2, '  Bob  ', 20.3)")
+    db.execute("INSERT INTO test_data VALUES (3, '  Charlie  ', 15.7)")
+    
+    print("Created test data")
+    
+    # Test MY_TRIM function
+    result = db.query("SELECT id, EXAMPLE_TRIM(name) as trimmed_name FROM test_data ORDER BY id")
+    print("Trimmed names:")
+    for row in result:
+        print("  ID {}: '{}'".format(row["id"], row["trimmed_name"]))
+    
+    # Test SQUARE function  
+    result = db.query("SELECT id, name, value, EXAMPLE_SQUARE(value) as squared FROM test_data ORDER BY id")
+    print("Squared values:")
+    for row in result:
+        print("  {}: {} -> {}".format(row["name"].strip(), row["value"], row["squared"]))
+    
+    # Test REVERSE_STR function
+    result = db.query("SELECT id, name, EXAMPLE_REVERSE(EXAMPLE_TRIM(name)) as reversed FROM test_data ORDER BY id")
+    print("Reversed names:")
+    for row in result:
+        print("  {}: '{}'".format(row["name"].strip(), row["reversed"]))
+    
+    # Test MIN_OF variadic function
+    result = db.query("SELECT EXAMPLE_MIN_OF(10.5, 20.3, 15.7, 5.2) as min_val")
+    min_val = result[0]["min_val"]
+    print("EXAMPLE_MIN_OF(10.5, 20.3, 15.7, 5.2) = {}".format(min_val))
+    
+    # Test with nulls
+    result = db.query("SELECT EXAMPLE_MIN_OF(10.5, NULL, 15.7) as min_val")
+    min_val = result[0]["min_val"]
+    print("EXAMPLE_MIN_OF(10.5, NULL, 15.7) = {}".format(min_val))
+    
+    # Test GET_STATS function
+    result = db.query("SELECT EXAMPLE_STATS(10.5, 20.3, 15.7) as stats")
+    stats = result[0]["stats"]
+    print("EXAMPLE_STATS(10.5, 20.3, 15.7) = {}".format(stats))
+    
+    # Test function in WHERE clause (deterministic functions)
+    result = db.query("SELECT id, name, value FROM test_data WHERE EXAMPLE_SQUARE(value) > 300 ORDER BY id")
+    print("Records where EXAMPLE_SQUARE(value) > 300:")
+    for row in result:
+        print("  {}: value={}, square={}".format(row["name"].strip(), row["value"], row["value"] * row["value"]))
+    
+    # Test function in ORDER BY
+    result = db.query("SELECT id, name, value FROM test_data ORDER BY EXAMPLE_SQUARE(value) DESC")
+    print("Records ordered by EXAMPLE_SQUARE(value) DESC:")
+    for row in result:
+        print("  {}: value={}, square={}".format(row["name"].strip(), row["value"], row["value"] * row["value"]))
+    
+    db.close()
+    
+    print("✓ All custom SQL function tests passed")
 
 main()
 `},

@@ -2,6 +2,8 @@
 
 A comprehensive Go module that brings the power of SQLite database operations to your Starlark scripts. This module provides both low-level SQL execution capabilities and high-level table management functions, making database interactions intuitive and straightforward while maintaining robust security features.
 
+**🚀 Featured:** Register custom SQL functions written in Starlark and call them directly in your SQL queries! See [Custom SQL Functions](#custom-sql-functions) for details.
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
 [![GoDoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite)](https://pkg.go.dev/github.com/starpkg/sqlite)
 
@@ -15,6 +17,7 @@ A comprehensive Go module that brings the power of SQLite database operations to
 - ✅ File-based and in-memory databases with flexible connection options
 - ✅ ATTACH/DETACH database support for multi-database operations
 - ✅ Schema introspection for table information and indices
+- ✅ Custom SQL functions for extending SQLite with Starlark logic
 - ✅ Automatic type conversion between SQLite and Starlark types
 - ✅ Configurable database settings (journal mode, synchronous mode, etc.)
 - ✅ Compatible with Go 1.18+ and cross-platform support
@@ -46,7 +49,11 @@ func main() {
     
     // Run a Starlark script with SQLite operations
     script := `
-load("sqlite", "connect")
+load("sqlite", "connect", "register_function")
+
+# Register a custom SQL function (before opening database)
+# Note: In production, use unique function names to avoid conflicts
+register_function("EXAMPLE_DOUBLE", lambda x: x * 2 if x else 0, num_args=1, deterministic=True)
 
 # Connect to an in-memory database
 db = connect(":memory:")
@@ -56,17 +63,18 @@ db.execute("""
     CREATE TABLE users (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
-        email TEXT UNIQUE
+        email TEXT UNIQUE,
+        score INTEGER
     )
 """)
 
 # Insert data using high-level API
-db.insert("users", {"name": "Alice", "email": "alice@example.com"})
+db.insert("users", {"name": "Alice", "email": "alice@example.com", "score": 95})
 
-# Query data
-users = db.query("SELECT * FROM users")
+# Query data using custom function
+users = db.query("SELECT name, email, EXAMPLE_DOUBLE(score) as doubled_score FROM users")
 for user in users:
-    print("User:", user["name"], user["email"])
+    print("User:", user["name"], "Score x2:", user["doubled_score"])
 
 # Close the connection
 db.close()
@@ -475,11 +483,13 @@ Creates a new table with specified column definitions, optional table constraint
 Columns can be defined in two ways:
 
 1. **Simple string definition** (backward compatible):
+
    ```python
    "column_name": "DATA_TYPE CONSTRAINTS"
    ```
 
 2. **Structured dictionary definition**:
+
    ```python
    "column_name": {
        "type": "DATA_TYPE",           # Required: SQLite data type
@@ -494,6 +504,7 @@ Columns can be defined in two ways:
 **Table Constraints:**
 
 Optional list of table-level constraints as SQL strings:
+
 - `"FOREIGN KEY (column) REFERENCES table(column) ON DELETE CASCADE"`
 - `"CHECK (condition)"`
 - `"UNIQUE (column1, column2)"`
@@ -501,6 +512,7 @@ Optional list of table-level constraints as SQL strings:
 **Indexes:**
 
 Optional list of indexes to create. Each index can be:
+
 - String: Single column name (e.g., `"column_name"`)
 - List: Multiple column names for composite index (e.g., `["col1", "col2"]`)
 
@@ -970,6 +982,537 @@ The module automatically handles type conversion between SQLite and Starlark:
 | bool          | INTEGER     | True→1, False→0 |
 | dict          | TEXT        | JSON encoded |
 | list          | TEXT        | JSON encoded |
+
+## Custom SQL Functions
+
+The SQLite module supports registering custom SQL functions written in Starlark that can be called from SQL queries. This feature allows you to extend SQLite with domain-specific logic and complex data processing functions.
+
+**⚠️ Critical Requirements**:
+
+- Custom functions **MUST** be registered **BEFORE** opening any database connections. Functions are registered globally with the SQLite driver and affect all connections opened after registration.
+- **Use unique function names** to avoid conflicts when multiple modules or tests register functions. Consider using prefixes like `APP_`, `MODULE_`, etc.
+
+### Function Registration
+
+#### `register_function(name, func, num_args=None, deterministic=False)`
+
+Registers a custom SQL function that can be called from SQL queries.
+
+**Parameters:**
+
+- `name` (string): The name of the SQL function to register (case-insensitive in SQL)
+- `func` (callable): A Starlark function or lambda that implements the custom logic
+- `num_args` (int, optional): Number of arguments the function accepts
+  - If `None` or not specified: Function is variadic (accepts any number of arguments)
+  - If specified: Function accepts exactly that many arguments
+  - Use `-1` for explicitly variadic functions
+- `deterministic` (bool, optional): Whether the function is deterministic (default: `False`)
+  - `True`: Function always returns the same result for identical inputs (enables SQLite optimizations)
+  - `False`: Function may return different results (e.g., functions using random values or current time)
+
+**Returns:** `None` on success
+
+**Raises:** Error on failure (invalid parameters, duplicate registration, etc.)
+
+### Registration Timing Requirements
+
+Functions **MUST** be registered before opening database connections:
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # ✅ CORRECT: Register before opening connections
+    register_function("MY_FUNC", lambda x: x * 2)
+    db = connect("database.db")  # Function available
+    
+    # ❌ INCORRECT: Register after opening connection
+    # db = connect("database.db")
+    # register_function("MY_FUNC", lambda x: x * 2)  # Too late!
+
+main()
+```
+
+### Basic Examples
+
+#### Simple String Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a string trimming function
+    register_function("MY_TRIM", lambda s: s.strip() if s else "")
+    
+    # Open database and use the function
+    db = connect(":memory:")
+    db.execute("CREATE TABLE users (name TEXT)")
+    db.execute("INSERT INTO users VALUES ('  John Doe  ')")
+    
+    result = db.query("SELECT MY_TRIM(name) as clean_name FROM users")
+    print(result)  # [{"clean_name": "John Doe"}]
+    
+    db.close()
+
+main()
+```
+
+#### Mathematical Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a deterministic mathematical function
+    register_function("SQUARE", lambda x: x * x if x else 0, num_args=1, deterministic=True)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE measurements (side REAL)")
+    db.execute("INSERT INTO measurements VALUES (5.0)")
+    
+    # Can create functional indexes with deterministic functions
+    db.execute("CREATE INDEX idx_area ON measurements (SQUARE(side))")
+    result = db.query("SELECT SQUARE(side) as area FROM measurements")
+    print(result)  # [{"area": 25.0}]
+    
+    db.close()
+
+main()
+```
+
+#### Multi-Argument Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a tax calculation function
+    register_function("ADD_TAX", lambda price, rate: price * (1.0 + rate), num_args=2)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE products (price REAL)")
+    db.execute("INSERT INTO products VALUES (100.0)")
+    
+    result = db.query("SELECT ADD_TAX(price, 0.08) as total FROM products")
+    print(result)  # [{"total": 108.0}]
+    
+    db.close()
+
+main()
+```
+
+#### Variadic Function
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that accepts variable arguments
+    def greatest(*args):
+        valid_args = [arg for arg in args if arg != None]
+        return max(valid_args) if valid_args else None
+    
+    register_function("GREATEST", greatest)  # variadic by default
+    
+    db = connect(":memory:")
+    result = db.query("SELECT GREATEST(1, 5, 3, 9, 2) as max_val")
+    print(result)  # [{"max_val": 9}]
+    
+    db.close()
+
+main()
+```
+
+### Advanced Examples
+
+#### Complex Data Processing
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that returns JSON statistics
+    def get_stats(*args):
+        if not args:
+            return {}
+        
+        non_null = [arg for arg in args if arg != None]
+        if not non_null:
+            return {}
+        
+        total = sum(non_null)
+        return {
+            "count": len(non_null),
+            "sum": total,
+            "avg": total / len(non_null),
+            "min": min(non_null),
+            "max": max(non_null)
+        }
+    
+    register_function("GET_STATS", get_stats)
+    
+    db = connect(":memory:")
+    result = db.query("SELECT GET_STATS(10.5, 20.3, 15.7) as stats")
+    print(result)  # Complex data automatically JSON-encoded
+    
+    db.close()
+
+main()
+```
+
+#### String Manipulation
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register multiple string functions
+    register_function("REVERSE_STR", lambda s: s[::-1] if s else "", num_args=1)
+    register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE users (first_name TEXT, last_name TEXT)")
+    db.execute("INSERT INTO users VALUES ('John', 'Doe')")
+    
+    # Use functions in SQL queries
+    result = db.query("""
+        SELECT 
+            CONCAT_WS(' ', first_name, last_name) as full_name,
+            REVERSE_STR(first_name) as reversed_first
+        FROM users
+    """)
+    print(result)  # [{"full_name": "John Doe", "reversed_first": "nhoJ"}]
+    
+    db.close()
+
+main()
+```
+
+#### Multiple Database Connections
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register functions once (before opening any connections)
+    # Note: Use unique function names to avoid conflicts with other modules/tests
+    register_function("APP_DOUBLE", lambda x: x * 2, num_args=1)
+    register_function("APP_CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
+    
+    # Functions are available to ALL connections opened after registration
+    db1 = connect(":memory:")
+    db2 = connect("app.db")
+    
+    # Both databases can use the registered functions
+    db1.execute("CREATE TABLE test1 (val INTEGER)")
+    db1.execute("INSERT INTO test1 VALUES (5)")
+    result1 = db1.query("SELECT APP_DOUBLE(val) FROM test1")
+    
+    db2.execute("CREATE TABLE test2 (first TEXT, last TEXT)")
+    db2.execute("INSERT INTO test2 VALUES ('John', 'Doe')")
+    result2 = db2.query("SELECT APP_CONCAT_WS(' ', first, last) as fullname FROM test2")
+    
+    db1.close()
+    db2.close()
+
+main()
+```
+
+### Error Handling
+
+The module provides comprehensive error handling for custom functions:
+
+#### Registration Errors
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # These will cause registration errors and halt script execution:
+    
+    # Empty function name
+    register_function("", lambda x: x)  # Error: function name cannot be empty
+    
+    # Non-callable parameter
+    register_function("NOT_FUNC", "not a function")  # Error: got string, want callable
+    
+    # Invalid num_args
+    register_function("BAD_ARGS", lambda x: x, num_args=-2)  # Error: num_args must be >= -1
+    
+    # Duplicate registration
+    register_function("TEST", lambda x: x)
+    register_function("TEST", lambda x: x * 2)  # Error: function 'TEST' is already registered
+
+main()
+```
+
+#### Runtime Errors
+
+When a custom function fails during SQL execution, the error is propagated as a SQL error:
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register a function that can fail
+    def divide_func(a, b):
+        if b == 0:
+            fail("Division by zero")
+        return a / b
+    
+    register_function("SAFE_DIVIDE", divide_func, num_args=2)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (a REAL, b REAL)")
+    db.execute("INSERT INTO test VALUES (10, 0)")  # Will cause division by zero
+    
+    # This will fail with: "Starlark function execution failed: fail: Division by zero"
+    result = db.query("SELECT SAFE_DIVIDE(a, b) FROM test")
+
+main()
+```
+
+#### Non-Existent Functions
+
+Calling functions that were never registered results in SQL errors:
+
+```python
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (value INTEGER)")
+    db.execute("INSERT INTO test VALUES (42)")
+    
+    # This will fail with: "no such function: UNDEFINED_FUNC"
+    result = db.query("SELECT UNDEFINED_FUNC(value) FROM test")
+
+main()
+```
+
+#### Handling Function Errors Gracefully
+
+Since Starlark doesn't have try/catch, validate inputs before function registration:
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Good: Validate and handle edge cases within the function
+    def safe_divide(a, b):
+        # Handle None values
+        if a == None or b == None:
+            return None
+        # Handle division by zero
+        if b == 0:
+            return None  # Return None instead of failing
+        return a / b
+    
+    register_function("SAFE_DIVIDE", safe_divide, num_args=2)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (a REAL, b REAL)")
+    db.execute("INSERT INTO test VALUES (10, 0)")
+    db.execute("INSERT INTO test VALUES (20, 4)")
+    db.execute("INSERT INTO test VALUES (NULL, 5)")
+    
+    # This query will succeed, returning NULL for problematic cases
+    result = db.query("SELECT a, b, SAFE_DIVIDE(a, b) as result FROM test")
+    for row in result:
+        print("Result: {} / {} = {}".format(row["a"], row["b"], row["result"]))
+    
+    db.close()
+
+main()
+```
+
+### Performance Considerations
+
+#### Deterministic Functions
+
+Mark functions as `deterministic=True` when they always return the same result for identical inputs:
+
+```python
+# ✅ Good: Pure mathematical functions
+register_function("SQUARE", lambda x: x * x, num_args=1, deterministic=True)
+register_function("FACTORIAL", factorial_func, num_args=1, deterministic=True)
+
+# ❌ Bad: Functions with side effects or randomness
+register_function("RANDOM_ID", lambda: random.randint(1, 1000), deterministic=True)  # Wrong!
+register_function("CURRENT_USER", get_current_user, deterministic=True)  # Wrong!
+```
+
+Deterministic functions enable SQLite optimizations:
+
+- **Result Caching**: SQLite can cache results for identical inputs
+- **Constant Folding**: Evaluation at compile time for constant inputs
+- **Functional Indexes**: Can create indexes on function results
+- **Query Optimization**: Better query plan generation
+
+#### Memory and Performance Tips
+
+```python
+# ✅ Efficient: Use appropriate num_args for validation
+register_function("ADD_TWO", lambda a, b: a + b, num_args=2)  # Exactly 2 args
+
+# ✅ Efficient: Mark pure functions as deterministic
+register_function("CALC_TAX", lambda price, rate: price * rate, num_args=2, deterministic=True)
+
+# ✅ Efficient: Handle None values early
+def safe_math(a, b):
+    if a == None or b == None:
+        return None
+    return a + b
+
+register_function("SAFE_ADD", safe_math, num_args=2, deterministic=True)
+```
+
+### Type Conversion
+
+Arguments passed to custom functions are automatically converted from SQLite types to Starlark types, and return values are converted back:
+
+| SQLite → Starlark | Starlark → SQLite | Notes |
+|-------------------|-------------------|-------|
+| NULL → None       | None → NULL       |       |
+| INTEGER → int     | int → INTEGER     |       |
+| REAL → float      | float → REAL      |       |
+| TEXT → string     | string → TEXT     |       |
+| BLOB → bytes      | bytes → BLOB      |       |
+|                   | bool → INTEGER    | True→1, False→0 |
+|                   | dict → TEXT (JSON)| Automatically serialized |
+|                   | list → TEXT (JSON)| Automatically serialized |
+
+#### Complex Type Example
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Function that processes and returns complex data
+    def process_data(value):
+        return {
+            "original": value,
+            "doubled": value * 2,
+            "type": type(value).__name__
+        }
+    
+    register_function("PROCESS_DATA", process_data, num_args=1)
+    
+    db = connect(":memory:")
+    db.execute("CREATE TABLE test (value INTEGER)")
+    db.execute("INSERT INTO test VALUES (42)")
+    
+    result = db.query("SELECT PROCESS_DATA(value) as processed FROM test")
+    # Returns JSON string: {"doubled":84,"original":42,"type":"int"}
+    print(result[0]["processed"])
+    
+    db.close()
+
+main()
+```
+
+### Best Practices
+
+1. **Register functions at startup** before opening any database connections
+2. **Use unique function names** with prefixes (e.g., `APP_`, `MODULE_`) to avoid conflicts with other modules or tests
+3. **Use descriptive function names** to avoid conflicts with SQLite built-ins
+4. **Mark mathematical/pure functions as deterministic** for optimization benefits
+5. **Handle None values gracefully** in function implementations
+6. **Keep functions simple** - complex logic should be done outside the SQL function
+7. **Test error conditions** to ensure robust error handling
+8. **Use appropriate num_args** for better performance and validation
+9. **Validate inputs within functions** instead of relying on external error handling
+10. **Return None for invalid inputs** rather than using fail() when possible
+11. **Consider memory usage** for functions that process large data sets
+
+### Complete Example
+
+```python
+load("sqlite", "connect", "register_function")
+
+def main():
+    # Register multiple functions with different characteristics
+    
+    # Simple deterministic math function
+    register_function("DEMO_SQUARE", lambda x: x * x if x != None else None, 
+                     num_args=1, deterministic=True)
+    
+    # String processing function
+    register_function("DEMO_CLEAN_TEXT", lambda s: s.strip().title() if s else "", 
+                     num_args=1)
+    
+    # Variadic function for statistics
+    def calculate_average(*args):
+        numbers = [arg for arg in args if arg != None and isinstance(arg, (int, float))]
+        return sum(numbers) / len(numbers) if numbers else None
+    
+    register_function("DEMO_AVG_OF", calculate_average, deterministic=True)
+    
+    # Complex data function
+    def create_summary(name, *values):
+        if not name:
+            return None
+        
+        numbers = [v for v in values if v != None and isinstance(v, (int, float))]
+        return {
+            "name": name,
+            "count": len(numbers),
+            "total": sum(numbers) if numbers else 0,
+            "average": sum(numbers) / len(numbers) if numbers else None
+        }
+    
+    register_function("DEMO_SUMMARY", create_summary)
+    
+    # Now use all functions
+    db = connect(":memory:")
+    
+    db.execute("""CREATE TABLE data (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        value1 REAL,
+        value2 REAL,
+        value3 REAL
+    )""")
+    
+    db.insert_many("data", [
+        {"name": "  alice  ", "value1": 10.5, "value2": 20.3, "value3": 15.7},
+        {"name": "  bob  ", "value1": 8.2, "value2": 12.1, "value3": 9.8},
+        {"name": "  charlie  ", "value1": 15.0, "value2": 25.5, "value3": 20.0}
+    ])
+    
+    # Query using all custom functions
+    result = db.query("""
+        SELECT 
+            DEMO_CLEAN_TEXT(name) as clean_name,
+            DEMO_SQUARE(value1) as squared_value1,
+            DEMO_AVG_OF(value1, value2, value3) as average,
+            DEMO_SUMMARY(DEMO_CLEAN_TEXT(name), value1, value2, value3) as summary
+        FROM data
+        ORDER BY clean_name
+    """)
+    
+    for row in result:
+        print("Name: {}".format(row["clean_name"]))
+        print("  Squared Value1: {}".format(row["squared_value1"]))
+        print("  Average: {}".format(row["average"]))
+        print("  Summary: {}".format(row["summary"]))
+        print()
+    
+    db.close()
+    
+    print("✓ All custom function examples completed successfully!")
+
+main()
+```
+
+This example demonstrates:
+
+- Registration timing (before database connection)
+- Different function types (deterministic, variadic, complex)
+- Proper error handling with None checks
+- Type conversion for complex return values
+- Integration with regular SQL operations
+- Best practices for performance and reliability
 
 ## Examples
 
