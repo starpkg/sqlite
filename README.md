@@ -52,7 +52,8 @@ func main() {
 load("sqlite", "connect", "register_function")
 
 # Register a custom SQL function (before opening database)
-register_function("DOUBLE", lambda x: x * 2 if x else 0, num_args=1, deterministic=True)
+# Note: In production, use unique function names to avoid conflicts
+register_function("EXAMPLE_DOUBLE", lambda x: x * 2 if x else 0, num_args=1, deterministic=True)
 
 # Connect to an in-memory database
 db = connect(":memory:")
@@ -71,7 +72,7 @@ db.execute("""
 db.insert("users", {"name": "Alice", "email": "alice@example.com", "score": 95})
 
 # Query data using custom function
-users = db.query("SELECT name, email, DOUBLE(score) as doubled_score FROM users")
+users = db.query("SELECT name, email, EXAMPLE_DOUBLE(score) as doubled_score FROM users")
 for user in users:
     print("User:", user["name"], "Score x2:", user["doubled_score"])
 
@@ -982,7 +983,9 @@ The module automatically handles type conversion between SQLite and Starlark:
 
 The SQLite module supports registering custom SQL functions written in Starlark that can be called from SQL queries. This feature allows you to extend SQLite with domain-specific logic and complex data processing functions.
 
-**⚠️ Critical Requirement**: Custom functions **MUST** be registered **BEFORE** opening any database connections. Functions are registered globally with the SQLite driver and affect all connections opened after registration.
+**⚠️ Critical Requirements**: 
+- Custom functions **MUST** be registered **BEFORE** opening any database connections. Functions are registered globally with the SQLite driver and affect all connections opened after registration.
+- **Use unique function names** to avoid conflicts when multiple modules or tests register functions. Consider using prefixes like `APP_`, `MODULE_`, etc.
 
 ### Function Registration
 
@@ -1187,8 +1190,9 @@ load("sqlite", "connect", "register_function")
 
 def main():
     # Register functions once (before opening any connections)
-    register_function("DOUBLE", lambda x: x * 2, num_args=1)
-    register_function("CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
+    # Note: Use unique function names to avoid conflicts with other modules/tests
+    register_function("APP_DOUBLE", lambda x: x * 2, num_args=1)
+    register_function("APP_CONCAT_WS", lambda sep, *args: sep.join([str(arg) for arg in args if arg != None]))
     
     # Functions are available to ALL connections opened after registration
     db1 = connect(":memory:")
@@ -1197,11 +1201,11 @@ def main():
     # Both databases can use the registered functions
     db1.execute("CREATE TABLE test1 (val INTEGER)")
     db1.execute("INSERT INTO test1 VALUES (5)")
-    result1 = db1.query("SELECT DOUBLE(val) FROM test1")
+    result1 = db1.query("SELECT APP_DOUBLE(val) FROM test1")
     
     db2.execute("CREATE TABLE test2 (first TEXT, last TEXT)")
     db2.execute("INSERT INTO test2 VALUES ('John', 'Doe')")
-    result2 = db2.query("SELECT CONCAT_WS(' ', first, last) as fullname FROM test2")
+    result2 = db2.query("SELECT APP_CONCAT_WS(' ', first, last) as fullname FROM test2")
     
     db1.close()
     db2.close()
@@ -1404,15 +1408,16 @@ main()
 ### Best Practices
 
 1. **Register functions at startup** before opening any database connections
-2. **Use descriptive function names** to avoid conflicts with SQLite built-ins
-3. **Mark mathematical/pure functions as deterministic** for optimization benefits
-4. **Handle None values gracefully** in function implementations
-5. **Keep functions simple** - complex logic should be done outside the SQL function
-6. **Test error conditions** to ensure robust error handling
-7. **Use appropriate num_args** for better performance and validation
-8. **Validate inputs within functions** instead of relying on external error handling
-9. **Return None for invalid inputs** rather than using fail() when possible
-10. **Consider memory usage** for functions that process large data sets
+2. **Use unique function names** with prefixes (e.g., `APP_`, `MODULE_`) to avoid conflicts with other modules or tests
+3. **Use descriptive function names** to avoid conflicts with SQLite built-ins
+4. **Mark mathematical/pure functions as deterministic** for optimization benefits
+5. **Handle None values gracefully** in function implementations
+6. **Keep functions simple** - complex logic should be done outside the SQL function
+7. **Test error conditions** to ensure robust error handling
+8. **Use appropriate num_args** for better performance and validation
+9. **Validate inputs within functions** instead of relying on external error handling
+10. **Return None for invalid inputs** rather than using fail() when possible
+11. **Consider memory usage** for functions that process large data sets
 
 ### Complete Example
 
@@ -1423,11 +1428,11 @@ def main():
     # Register multiple functions with different characteristics
     
     # Simple deterministic math function
-    register_function("SQUARE", lambda x: x * x if x != None else None, 
+    register_function("DEMO_SQUARE", lambda x: x * x if x != None else None, 
                      num_args=1, deterministic=True)
     
     # String processing function
-    register_function("CLEAN_TEXT", lambda s: s.strip().title() if s else "", 
+    register_function("DEMO_CLEAN_TEXT", lambda s: s.strip().title() if s else "", 
                      num_args=1)
     
     # Variadic function for statistics
@@ -1435,7 +1440,7 @@ def main():
         numbers = [arg for arg in args if arg != None and isinstance(arg, (int, float))]
         return sum(numbers) / len(numbers) if numbers else None
     
-    register_function("AVG_OF", calculate_average, deterministic=True)
+    register_function("DEMO_AVG_OF", calculate_average, deterministic=True)
     
     # Complex data function
     def create_summary(name, *values):
@@ -1450,7 +1455,7 @@ def main():
             "average": sum(numbers) / len(numbers) if numbers else None
         }
     
-    register_function("SUMMARY", create_summary)
+    register_function("DEMO_SUMMARY", create_summary)
     
     # Now use all functions
     db = connect(":memory:")
@@ -1472,10 +1477,10 @@ def main():
     # Query using all custom functions
     result = db.query("""
         SELECT 
-            CLEAN_TEXT(name) as clean_name,
-            SQUARE(value1) as squared_value1,
-            AVG_OF(value1, value2, value3) as average,
-            SUMMARY(CLEAN_TEXT(name), value1, value2, value3) as summary
+            DEMO_CLEAN_TEXT(name) as clean_name,
+            DEMO_SQUARE(value1) as squared_value1,
+            DEMO_AVG_OF(value1, value2, value3) as average,
+            DEMO_SUMMARY(DEMO_CLEAN_TEXT(name), value1, value2, value3) as summary
         FROM data
         ORDER BY clean_name
     """)
