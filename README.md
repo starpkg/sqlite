@@ -483,11 +483,13 @@ Creates a new table with specified column definitions, optional table constraint
 Columns can be defined in two ways:
 
 1. **Simple string definition** (backward compatible):
+
    ```python
    "column_name": "DATA_TYPE CONSTRAINTS"
    ```
 
 2. **Structured dictionary definition**:
+
    ```python
    "column_name": {
        "type": "DATA_TYPE",           # Required: SQLite data type
@@ -502,6 +504,7 @@ Columns can be defined in two ways:
 **Table Constraints:**
 
 Optional list of table-level constraints as SQL strings:
+
 - `"FOREIGN KEY (column) REFERENCES table(column) ON DELETE CASCADE"`
 - `"CHECK (condition)"`
 - `"UNIQUE (column1, column2)"`
@@ -509,6 +512,7 @@ Optional list of table-level constraints as SQL strings:
 **Indexes:**
 
 Optional list of indexes to create. Each index can be:
+
 - String: Single column name (e.g., `"column_name"`)
 - List: Multiple column names for composite index (e.g., `["col1", "col2"]`)
 
@@ -983,7 +987,8 @@ The module automatically handles type conversion between SQLite and Starlark:
 
 The SQLite module supports registering custom SQL functions written in Starlark that can be called from SQL queries. This feature allows you to extend SQLite with domain-specific logic and complex data processing functions.
 
-**⚠️ Critical Requirements**: 
+**⚠️ Critical Requirements**:
+
 - Custom functions **MUST** be registered **BEFORE** opening any database connections. Functions are registered globally with the SQLite driver and affect all connections opened after registration.
 - **Use unique function names** to avoid conflicts when multiple modules or tests register functions. Consider using prefixes like `APP_`, `MODULE_`, etc.
 
@@ -1338,6 +1343,7 @@ register_function("CURRENT_USER", get_current_user, deterministic=True)  # Wrong
 ```
 
 Deterministic functions enable SQLite optimizations:
+
 - **Result Caching**: SQLite can cache results for identical inputs
 - **Constant Folding**: Evaluation at compile time for constant inputs
 - **Functional Indexes**: Can create indexes on function results
@@ -1500,6 +1506,7 @@ main()
 ```
 
 This example demonstrates:
+
 - Registration timing (before database connection)
 - Different function types (deterministic, variadic, complex)
 - Proper error handling with None checks
