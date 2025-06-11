@@ -8,19 +8,44 @@ import (
 	"go.starlark.net/starlark"
 )
 
+// checkTableExists is a helper function to check if a table exists.
+// This is used internally by create_table when exist_ok=True.
+func (db *database) checkTableExists(table string) (bool, error) {
+	var count int
+	err := db.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // createTable creates a new table with the specified columns, optional constraints, and indexes.
 func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columns *starlark.Dict
 	var constraintsVal starlark.Value
 	var indexesVal starlark.Value
+	var existOk bool
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"columns", &columns,
 		"constraints?", &constraintsVal,
-		"indexes?", &indexesVal); err != nil {
+		"indexes?", &indexesVal,
+		"exist_ok?", &existOk); err != nil {
 		return nil, err
+	}
+
+	// Check if table exists and handle exist_ok flag
+	if existOk {
+		exists, err := db.checkTableExists(table)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if table exists: %w", err)
+		}
+		if exists {
+			// Table exists and exist_ok is True, silently return success
+			return starlark.None, nil
+		}
 	}
 
 	// Begin transaction for atomicity

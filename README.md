@@ -467,7 +467,7 @@ Rolls back the transaction.
 
 #### Table Management
 
-##### `create_table(table, columns, constraints?, indexes?)`
+##### `create_table(table, columns, constraints?, indexes?, exist_ok?)`
 
 Creates a new table with specified column definitions, optional table constraints, and indexes.
 
@@ -477,6 +477,7 @@ Creates a new table with specified column definitions, optional table constraint
 - `columns` (dict): Dictionary mapping column names to their definitions
 - `constraints` (list, optional): List of table-level constraint SQL strings
 - `indexes` (list, optional): List of indexes to create
+- `exist_ok` (bool, optional): If `True`, do not raise an error if the table already exists (default: `False`)
 
 **Column Definitions:**
 
@@ -585,6 +586,21 @@ db.create_table("products", {
         "default": "general"
     }
 })
+
+# Safe table creation (won't fail if table already exists)
+db.create_table("users", {
+    "id": "INTEGER PRIMARY KEY",
+    "name": "TEXT NOT NULL",
+    "email": "TEXT UNIQUE"
+}, exist_ok=True)
+
+# Idempotent setup scripts - create tables only if they don't exist
+db.create_table("settings", {
+    "key": "TEXT PRIMARY KEY",
+    "value": "TEXT"
+}, constraints=[
+    "CHECK (length(key) > 0)"
+], indexes=["key"], exist_ok=True)
 ```
 
 ##### `drop_table(table)`

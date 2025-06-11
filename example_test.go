@@ -1607,6 +1607,164 @@ def main():
 
 main()
 `},
+		{"ExistOkFeature", `
+load("sqlite", "connect")
+
+def main():
+    """Test the exist_ok parameter for create_table."""
+    print("Testing exist_ok parameter functionality...")
+
+    db = connect(":memory:")
+
+    # Test 1: Normal table creation (should succeed)
+    print("Test 1: Normal table creation")
+    db.create_table("users", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "email": "TEXT UNIQUE"
+    })
+    
+    # Verify table was created
+    if not db.table_exists("users"):
+        fail("users table should exist after creation")
+    print("✓ Table created successfully")
+
+    # Test 2: Try to create same table again with exist_ok=False (would fail, but we skip this test)
+    print("Test 2: Duplicate creation with exist_ok=False would fail (skipped)")
+
+    # Test 3: Create same table again with exist_ok=True (should succeed silently)
+    print("Test 3: Duplicate creation with exist_ok=True")
+    db.create_table("users", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "email": "TEXT UNIQUE"
+    }, exist_ok=True)
+    
+    # Table should still exist and be functional
+    if not db.table_exists("users"):
+        fail("users table should still exist after duplicate creation with exist_ok=True")
+    print("✓ Duplicate creation with exist_ok=True succeeded")
+
+    # Test 4: Insert data to verify table is still functional
+    print("Test 4: Verify table functionality")
+    user_id = db.insert("users", {"name": "Alice", "email": "alice@example.com"})
+    if user_id <= 0:
+        fail("Should be able to insert into table after exist_ok creation")
+    
+    users = db.query("SELECT * FROM users WHERE name = ?", ["Alice"])
+    if len(users) != 1:
+        fail("Should find exactly one user")
+    print("✓ Table is functional after exist_ok creation")
+
+    # Test 5: Test with constraints and indexes
+    print("Test 5: Complex table with exist_ok=True")
+    db.create_table("products", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "category": "TEXT",
+        "price": "REAL DEFAULT 0.0"
+    }, constraints=[
+        "CHECK (price >= 0)"
+    ], indexes=[
+        "category",
+        ["name", "category"]
+    ], exist_ok=True)
+    
+    # Try to create the same table again with different schema (should still succeed silently)
+    db.create_table("products", {
+        "id": "INTEGER PRIMARY KEY",
+        "different_column": "TEXT"  # Different schema
+    }, exist_ok=True)
+    
+    # Verify original table structure is preserved
+    if not db.table_exists("products"):
+        fail("products table should exist")
+    
+    # Insert test data to verify original schema is preserved
+    product_id = db.insert("products", {"name": "Laptop", "category": "Electronics", "price": 999.99})
+    if product_id <= 0:
+        fail("Should be able to insert with original schema")
+    print("✓ Complex table with exist_ok=True works correctly")
+
+    # Test 6: Idempotent setup pattern
+    print("Test 6: Idempotent setup pattern")
+    
+    # This pattern is useful for migrations and setup scripts
+    tables_to_create = [
+        ("logs", {
+            "id": "INTEGER PRIMARY KEY",
+            "message": "TEXT NOT NULL",
+            "timestamp": "TEXT DEFAULT CURRENT_TIMESTAMP"
+        }),
+        ("config", {
+            "key": "TEXT PRIMARY KEY",
+            "value": "TEXT"
+        }),
+        ("cache", {
+            "key": "TEXT PRIMARY KEY",
+            "value": "TEXT",
+            "expires_at": "TEXT"
+        })
+    ]
+    
+    # Create all tables (safe to run multiple times)
+    for table_name, schema in tables_to_create:
+        db.create_table(table_name, schema, exist_ok=True)
+    
+    # Verify all tables exist
+    all_tables = db.tables()
+    expected_tables = ["users", "products", "logs", "config", "cache"]
+    for expected_table in expected_tables:
+        if expected_table not in all_tables:
+            fail("Expected table '{}' not found".format(expected_table))
+    
+    print("✓ Idempotent setup pattern works correctly")
+
+    # Test 7: Mixed parameters with exist_ok
+    print("Test 7: All parameters with exist_ok")
+    db.create_table("advanced_table", {
+        "id": {
+            "type": "INTEGER",
+            "primary_key": True,
+            "autoincrement": True
+        },
+        "name": {
+            "type": "TEXT",
+            "not_null": True,
+            "unique": True
+        },
+        "data": {
+            "type": "TEXT",
+            "default": "{}"
+        }
+    }, constraints=[
+        "CHECK (length(name) > 0)"
+    ], indexes=[
+        "name"
+    ], exist_ok=True)
+    
+    # Try to create again - should work
+    db.create_table("advanced_table", {
+        "different_id": "INTEGER PRIMARY KEY"
+    }, exist_ok=True)
+    
+    # Verify original structure preserved
+    if not db.table_exists("advanced_table"):
+        fail("advanced_table should exist")
+    
+    # Test that original structure works
+    advanced_id = db.insert("advanced_table", {"name": "test_item", "data": '{"key": "value"}'})
+    if advanced_id <= 0:
+        fail("Should be able to insert with original advanced schema")
+    
+    print("✓ All parameters with exist_ok work correctly")
+
+    db.close()
+    
+    print("✓ All exist_ok parameter tests passed!")
+
+main()
+`},
 	}
 
 	for _, test := range tests {
