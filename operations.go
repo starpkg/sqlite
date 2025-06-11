@@ -2,21 +2,30 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"go.starlark.net/starlark"
+	sqlite "modernc.org/sqlite"
 )
 
-// checkTableExists is a helper function to check if a table exists.
-// This is used internally by create_table when exist_ok=True.
-func (db *database) checkTableExists(table string) (bool, error) {
-	var count int
-	err := db.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
-	if err != nil {
-		return false, err
+// isTableAlreadyExistsError checks if the error is specifically about a table already existing.
+// Uses SQLite's semantic error codes rather than string matching.
+func isTableAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return count > 0, nil
+
+	// Check if it's a SQLite error with the appropriate error code
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		// Check for SQLITE_ERROR (1) which is used for "table already exists"
+		// and also check the message contains "already exists" to be more specific
+		return sqliteErr.Code() == 1 && strings.Contains(strings.ToLower(sqliteErr.Error()), "already exists")
+	}
+
+	return false
 }
 
 // createTable creates a new table with the specified columns, optional constraints, and indexes.
@@ -34,18 +43,6 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 		"indexes?", &indexesVal,
 		"exist_ok?", &existOk); err != nil {
 		return nil, err
-	}
-
-	// Check if table exists and handle exist_ok flag
-	if existOk {
-		exists, err := db.checkTableExists(table)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check if table exists: %w", err)
-		}
-		if exists {
-			// Table exists and exist_ok is True, silently return success
-			return starlark.None, nil
-		}
 	}
 
 	// Begin transaction for atomicity
@@ -80,6 +77,10 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	_, err = tx.Exec(query)
 	if err != nil {
 		tx.Rollback()
+		// Handle exist_ok case: ignore "table already exists" errors
+		if existOk && isTableAlreadyExistsError(err) {
+			return starlark.None, nil
+		}
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
