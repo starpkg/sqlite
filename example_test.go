@@ -59,8 +59,13 @@ def main():
     
     # Transaction
     tx = db.begin()
-    tx.execute("UPDATE users SET age = age + 1 WHERE name = ?", ["Alice"])
-    tx.commit()
+    update_result = tx.execute("UPDATE users SET age = age + 1 WHERE name = ?", ["Alice"])
+    if update_result.ok:
+        commit_result = tx.commit()
+        if not commit_result.ok:
+            fail("Failed to commit transaction: {}".format(commit_result.error))
+    else:
+        fail("Failed to update user age: {}".format(update_result.error))
     
     # Query with parameters
     user = db.query_one("SELECT * FROM users WHERE name = ?", ["Alice"])
@@ -104,6 +109,137 @@ def main():
 
 main()
 `},
+		{"TransactionErrorHandling", `
+load("sqlite", "connect")
+
+def main():
+    """Test the new OperationResult-based transaction error handling."""
+    print("Testing OperationResult-based transaction error handling...")
+    
+    # Connect to an in-memory database
+    db = connect(":memory:")
+    
+    # Create test table
+    db.execute("""
+        CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            balance REAL NOT NULL DEFAULT 0.0
+        )
+    """)
+    
+    # Insert test data
+    db.execute("INSERT INTO accounts (id, name, balance) VALUES (1, 'Alice', 1000.0)")
+    db.execute("INSERT INTO accounts (id, name, balance) VALUES (2, 'Bob', 500.0)") 
+    
+    # Test 1: Successful transaction operations
+    print("Test 1: Successful operations")
+    tx = db.begin()
+    
+    # Test successful execute
+    debit_result = tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100.0, 1])
+    if not debit_result.ok:
+        fail("Execute should succeed: {}".format(debit_result.error))
+    if debit_result.value != 1:  # 1 row affected
+        fail("Expected 1 row affected, got {}".format(debit_result.value))
+    print("✓ Execute result: ok={}, value={}".format(debit_result.ok, debit_result.value))
+    
+    # Test successful query
+    balance_result = tx.query("SELECT * FROM accounts WHERE id = 1")
+    if not balance_result.ok:
+        fail("Query should succeed: {}".format(balance_result.error))
+    if len(balance_result.value) != 1:
+        fail("Expected 1 result row")
+    print("✓ Query result: ok={}, rows={}".format(balance_result.ok, len(balance_result.value)))
+    
+    # Test successful query_one
+    one_result = tx.query_one("SELECT balance FROM accounts WHERE id = 1")
+    if not one_result.ok:
+        fail("Query_one should succeed: {}".format(one_result.error))
+    if one_result.value["balance"] != 900.0:
+        fail("Expected balance to be 900.0, got {}".format(one_result.value["balance"]))
+    print("✓ Query_one result: ok={}, balance={}".format(one_result.ok, one_result.value["balance"]))
+    
+    # Test successful commit
+    commit_result = tx.commit()
+    if not commit_result.ok:
+        fail("Commit should succeed: {}".format(commit_result.error))
+    print("✓ Commit result: ok={}".format(commit_result.ok))
+    
+    # Test 2: Error handling - SQL error
+    print("Test 2: SQL error handling")
+    tx2 = db.begin()
+    
+    # Try to execute invalid SQL
+    bad_result = tx2.execute("INVALID SQL STATEMENT")
+    if bad_result.ok:
+        fail("Invalid SQL should fail")
+    if bad_result.error == "":
+        fail("Error message should not be empty")
+    print("✓ SQL error caught: {}".format(bad_result.error))
+    
+    # Transaction should still be usable after error
+    good_result = tx2.execute("SELECT COUNT(*) as count FROM accounts")
+    if not good_result.ok:
+        fail("Transaction should still be usable after SQL error")
+    
+    tx2.rollback()  # Clean up
+    
+    # Test 3: Error handling - constraint violation  
+    print("Test 3: Constraint violation")
+    tx3 = db.begin()
+    
+    # Try to insert duplicate unique key
+    dup_result = tx3.execute("INSERT INTO accounts (id, name, balance) VALUES (3, 'Alice', 100.0)")
+    if dup_result.ok:
+        fail("Duplicate name should violate unique constraint")
+    if "UNIQUE constraint failed" not in dup_result.error:
+        fail("Expected UNIQUE constraint error, got: {}".format(dup_result.error))
+    print("✓ Constraint error caught: {}".format(dup_result.error))
+    
+    tx3.rollback()
+    
+    # Test 4: No rows found (not an error)
+    print("Test 4: No rows scenarios")
+    tx4 = db.begin()
+    
+    # Query with no results
+    empty_query = tx4.query("SELECT * FROM accounts WHERE id = 999")
+    if not empty_query.ok:
+        fail("Query with no results should succeed with empty list")
+    if len(empty_query.value) != 0:
+        fail("Expected empty result list")
+    print("✓ Empty query result: ok={}, rows={}".format(empty_query.ok, len(empty_query.value)))
+    
+    # Query_one with no results
+    empty_one = tx4.query_one("SELECT * FROM accounts WHERE id = 999") 
+    if not empty_one.ok:
+        fail("Query_one with no results should succeed with None")
+    if empty_one.value != None:
+        fail("Expected None result")
+    print("✓ Empty query_one result: ok={}, value={}".format(empty_one.ok, empty_one.value))
+    
+    tx4.commit()
+    
+    # Test 5: Rollback still fails on error (as designed)
+    print("Test 5: Rollback behavior")
+    tx5 = db.begin() 
+    tx5.execute("INSERT INTO accounts (id, name, balance) VALUES (3, 'Charlie', 200.0)")
+    
+    # Normal rollback should work
+    tx5.rollback()
+    print("✓ Normal rollback works")
+    
+    # Verify data was rolled back
+    charlie = db.query_one("SELECT * FROM accounts WHERE name = 'Charlie'")
+    if charlie != None:
+        fail("Charlie should not exist after rollback")
+    
+    db.close()
+    print("✓ All OperationResult tests passed")
+
+main()
+`},
 		{"Transactions", `
 load("sqlite", "connect")
 
@@ -138,18 +274,37 @@ def main():
         tx = db.begin()
         
         # Check if from_account has sufficient funds
-        from_account = tx.query_one("SELECT * FROM accounts WHERE id = ?", [from_id])
+        from_account_result = tx.query_one("SELECT * FROM accounts WHERE id = ?", [from_id])
+        if not from_account_result.ok:
+            print("Failed to check account: {}".format(from_account_result.error))
+            tx.rollback()
+            return False
+        
+        from_account = from_account_result.value
         if not from_account or from_account["balance"] < amount:
             print("Insufficient funds, rolling back")
             tx.rollback()
             return False
         
         # Update balances
-        tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [amount, from_id])
-        tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [amount, to_id])
+        debit_result = tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [amount, from_id])
+        if not debit_result.ok:
+            print("Failed to debit account: {}".format(debit_result.error))
+            tx.rollback()
+            return False
+        
+        credit_result = tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [amount, to_id])
+        if not credit_result.ok:
+            print("Failed to credit account: {}".format(credit_result.error))
+            tx.rollback()
+            return False
         
         # Commit the transaction
-        tx.commit()
+        commit_result = tx.commit()
+        if not commit_result.ok:
+            print("Failed to commit transaction: {}".format(commit_result.error))
+            return False
+        
         print("Transfer successful")
         return True
     
@@ -631,8 +786,13 @@ def main():
     
     # Test transaction with explicit commit
     tx = db.begin()
-    tx.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [2, "test2"])
-    tx.commit()
+    insert_result = tx.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [2, "test2"])
+    if insert_result.ok:
+        commit_result = tx.commit()
+        if not commit_result.ok:
+            fail("Failed to commit transaction: {}".format(commit_result.error))
+    else:
+        fail("Failed to insert test record: {}".format(insert_result.error))
     
     # Verify commit worked
     committed = db.query("SELECT * FROM test_error WHERE id = 2")
@@ -642,9 +802,16 @@ def main():
     
     # Test transaction with rollback
     tx2 = db.begin()
-    tx2.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [3, "test3"])
+    insert2_result = tx2.execute("INSERT INTO test_error (id, name) VALUES (?, ?)", [3, "test3"])
+    if not insert2_result.ok:
+        fail("Failed to insert for rollback test: {}".format(insert2_result.error))
+    
     # Data should be visible within transaction
-    in_tx = tx2.query("SELECT * FROM test_error WHERE id = 3")
+    query_result = tx2.query("SELECT * FROM test_error WHERE id = 3")
+    if not query_result.ok:
+        fail("Failed to query within transaction: {}".format(query_result.error))
+    
+    in_tx = query_result.value
     if len(in_tx) != 1:
         fail("Expected to see record within transaction")
     # But rollback the transaction
@@ -1158,18 +1325,26 @@ def main():
         "new_key": "added in transaction"
     }
     
-    tx.execute(
+    update_result = tx.execute(
         "UPDATE complex_types SET dict_data = ? WHERE id = ?",
         [updated_dict, id2]
     )
+    if not update_result.ok:
+        fail("Failed to update complex data: {}".format(update_result.error))
     
     # Check that data is visible within the transaction
-    tx_row = tx.query_one("SELECT dict_data FROM complex_types WHERE id = ?", [id2])
+    tx_query_result = tx.query_one("SELECT dict_data FROM complex_types WHERE id = ?", [id2])
+    if not tx_query_result.ok:
+        fail("Failed to query within transaction: {}".format(tx_query_result.error))
+    
+    tx_row = tx_query_result.value
     if "new_key" not in tx_row["dict_data"]:
         fail("Transaction update of complex data failed")
     
     # Commit the transaction
-    tx.commit()
+    commit_result = tx.commit()
+    if not commit_result.ok:
+        fail("Failed to commit complex data transaction: {}".format(commit_result.error))
     
     # Verify update persisted
     after_tx = db.query_one("SELECT dict_data FROM complex_types WHERE id = ?", [id2])
