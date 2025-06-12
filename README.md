@@ -4,6 +4,8 @@ A comprehensive Go module that brings the power of SQLite database operations to
 
 **🚀 Featured:** Register custom SQL functions written in Starlark and call them directly in your SQL queries! See [Custom SQL Functions](#custom-sql-functions) for details.
 
+**🆕 New in Latest Release:** Enhanced transaction error handling! Transaction methods now return `OperationResult` objects for graceful error handling without script termination. See [Advanced Transaction Error Handling](#advanced-transaction-error-handling) for details.
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
 [![GoDoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite)](https://pkg.go.dev/github.com/starpkg/sqlite)
 
@@ -12,7 +14,7 @@ A comprehensive Go module that brings the power of SQLite database operations to
 - ✅ Low-level SQL execution with prepared statements and parameterized queries
 - ✅ Batch operations for executing multiple statements in a single transaction
 - ✅ High-level table and record operations for common database tasks
-- ✅ Transaction management with begin/commit/rollback support
+- ✅ Transaction management with begin/commit/rollback support and error handling
 - ✅ SQL injection prevention through parameterized queries
 - ✅ File-based and in-memory databases with flexible connection options
 - ✅ ATTACH/DETACH database support for multi-database operations
@@ -395,24 +397,45 @@ Begins a new transaction.
 # Begin a transaction
 tx = db.begin()
 
-# Execute operations within the transaction
-# Note: In Starlark, errors will automatically cause script failure
-# Use proper validation instead of try/except
-tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
-tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
+# Execute operations within the transaction with error handling
+update1 = tx.execute("UPDATE accounts SET balance = balance - ? WHERE id = ?", [100, 1])
+update2 = tx.execute("UPDATE accounts SET balance = balance + ? WHERE id = ?", [100, 2])
+
+# Check if operations succeeded
+if not update1.ok or not update2.ok:
+    print("Transaction operations failed:")
+    if not update1.ok:
+        print("- Update 1 error:", update1.error)
+    if not update2.ok:
+        print("- Update 2 error:", update2.error)
+    tx.rollback()
+    fail("Transaction failed")
 
 # Commit the transaction
-tx.commit()
+commit_result = tx.commit()
+if not commit_result.ok:
+    print("Failed to commit transaction:", commit_result.error)
+    fail("Commit failed")
+
 print("Transfer successful")
 
-# For error handling, you can check conditions beforehand:
-# source_balance = tx.query_one("SELECT balance FROM accounts WHERE id = ?", [1])
-# if not source_balance or source_balance["balance"] < 100:
-#     tx.rollback()
-#     fail("Insufficient funds for transfer")
+# Example with validation within transaction:
+balance_result = tx.query_one("SELECT balance FROM accounts WHERE id = ?", [1])
+if not balance_result.ok:
+    tx.rollback()
+    fail("Failed to check balance: " + balance_result.error)
+
+if not balance_result.value or balance_result.value["balance"] < 100:
+    tx.rollback()
+    fail("Insufficient funds for transfer")
 ```
 
 #### Transaction Object Methods
+
+**Note:** Transaction methods now return `OperationResult` objects for better error handling. Each result has:
+- `result.ok` (bool): Whether the operation succeeded
+- `result.error` (string): Error message if operation failed
+- `result.value`: The actual result value if operation succeeded
 
 ##### `execute(query, params?)`
 
@@ -423,7 +446,7 @@ Executes a SQL statement within the transaction.
 - `query` (string): SQL statement to execute
 - `params` (list): Optional list of parameters
 
-**Returns:** Number of affected rows (int)
+**Returns:** `OperationResult` with number of affected rows in `.value` property
 
 ##### `query(query, params?)`
 
@@ -434,7 +457,7 @@ Executes a SQL query within the transaction.
 - `query` (string): SQL query to execute
 - `params` (list): Optional list of parameters
 
-**Returns:** List of dictionaries representing rows
+**Returns:** `OperationResult` with list of dictionaries representing rows in `.value` property
 
 ##### `query_one(query, params?)`
 
@@ -445,7 +468,7 @@ Executes a SQL query within the transaction and returns the first row.
 - `query` (string): SQL query to execute
 - `params` (list): Optional list of parameters
 
-**Returns:** Dictionary representing the first row, or None
+**Returns:** `OperationResult` with dictionary representing the first row (or None) in `.value` property
 
 ##### `commit()`
 
@@ -453,7 +476,7 @@ Commits the transaction.
 
 **Parameters:** None
 
-**Returns:** None
+**Returns:** `OperationResult` indicating success or failure
 
 ##### `rollback()`
 
@@ -1620,42 +1643,59 @@ def main():
         tx = db.begin()
         
         # Check source account balance
-        source = tx.query_one(
+        source_result = tx.query_one(
             "SELECT * FROM accounts WHERE account_number = ?",
             [from_account]
         )
         
-        if not source:
+        if not source_result.ok:
+            tx.rollback()
+            return False, "Database error: " + source_result.error
+        
+        if not source_result.value:
             tx.rollback()
             return False, "Source account not found"
         
+        source = source_result.value
         if source["balance"] < amount:
             tx.rollback()
             return False, "Insufficient funds"
         
         # Check destination account exists
-        destination = tx.query_one(
+        destination_result = tx.query_one(
             "SELECT * FROM accounts WHERE account_number = ?",
             [to_account]
         )
         
-        if not destination:
+        if not destination_result.ok:
+            tx.rollback()
+            return False, "Database error: " + destination_result.error
+        
+        if not destination_result.value:
             tx.rollback()
             return False, "Destination account not found"
         
         # Perform the transfer
-        tx.execute(
+        debit_result = tx.execute(
             "UPDATE accounts SET balance = balance - ? WHERE account_number = ?",
             [amount, from_account]
         )
         
-        tx.execute(
+        credit_result = tx.execute(
             "UPDATE accounts SET balance = balance + ? WHERE account_number = ?",
             [amount, to_account]
         )
         
+        # Check if transfer operations succeeded
+        if not debit_result.ok or not credit_result.ok:
+            tx.rollback()
+            return False, "Transfer operations failed"
+        
         # Commit the transaction
-        tx.commit()
+        commit_result = tx.commit()
+        if not commit_result.ok:
+            return False, "Failed to commit transaction: " + commit_result.error
+        
         return True, "Transfer successful"
     
     # Perform transfers
@@ -1674,6 +1714,122 @@ def main():
             account["owner"], 
             account["balance"]
         ))
+    
+    db.close()
+
+main()
+```
+
+### Advanced Transaction Error Handling
+
+Transaction operations return result objects that allow you to handle errors gracefully without script termination:
+
+```python
+load("sqlite", "connect")
+
+def main():
+    # Connect to database
+    db = connect(":memory:")
+    
+    # Create accounts table
+    db.create_table("accounts", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "balance": "REAL NOT NULL DEFAULT 0.0 CHECK (balance >= 0)"
+    })
+    
+    # Insert test accounts
+    db.insert_many("accounts", [
+        {"name": "Alice", "balance": 1000.0},
+        {"name": "Bob", "balance": 500.0}
+    ])
+    
+    def safe_transfer(from_name, to_name, amount):
+        """Perform a safe money transfer with comprehensive error handling."""
+        tx = db.begin()
+        
+        # Check source account
+        from_result = tx.query_one("SELECT * FROM accounts WHERE name = ?", [from_name])
+        if not from_result.ok:
+            tx.rollback()
+            return False, "Database error checking source account: " + from_result.error
+        
+        if not from_result.value:
+            tx.rollback()
+            return False, "Source account '{}' not found".format(from_name)
+        
+        from_account = from_result.value
+        if from_account["balance"] < amount:
+            tx.rollback()
+            return False, "Insufficient funds: ${} available, ${} requested".format(
+                from_account["balance"], amount
+            )
+        
+        # Check destination account
+        to_result = tx.query_one("SELECT * FROM accounts WHERE name = ?", [to_name])
+        if not to_result.ok:
+            tx.rollback()
+            return False, "Database error checking destination account: " + to_result.error
+        
+        if not to_result.value:
+            tx.rollback()
+            return False, "Destination account '{}' not found".format(to_name)
+        
+        # Perform transfer operations
+        debit_result = tx.execute(
+            "UPDATE accounts SET balance = balance - ? WHERE name = ?",
+            [amount, from_name]
+        )
+        
+        if not debit_result.ok:
+            tx.rollback()
+            return False, "Failed to debit source account: " + debit_result.error
+        
+        credit_result = tx.execute(
+            "UPDATE accounts SET balance = balance + ? WHERE name = ?",
+            [amount, to_name]
+        )
+        
+        if not credit_result.ok:
+            tx.rollback()
+            return False, "Failed to credit destination account: " + credit_result.error
+        
+        # Verify the transfer worked correctly
+        verify_result = tx.query(
+            "SELECT name, balance FROM accounts WHERE name IN (?, ?) ORDER BY name",
+            [from_name, to_name]
+        )
+        
+        if not verify_result.ok:
+            tx.rollback()
+            return False, "Failed to verify transfer: " + verify_result.error
+        
+        # Commit the transaction
+        commit_result = tx.commit()
+        if not commit_result.ok:
+            return False, "Failed to commit transaction: " + commit_result.error
+        
+        return True, "Transfer of ${} from {} to {} completed successfully".format(
+            amount, from_name, to_name
+        )
+    
+    # Test successful transfer
+    success, message = safe_transfer("Alice", "Bob", 200.0)
+    print("Transfer 1:", message)
+    
+    # Test transfer with insufficient funds
+    success, message = safe_transfer("Bob", "Alice", 1000.0)
+    print("Transfer 2:", message)
+    
+    # Test transfer to non-existent account
+    success, message = safe_transfer("Alice", "Charlie", 100.0)
+    print("Transfer 3:", message)
+    
+    # Show final balances
+    balances = db.query("SELECT name, balance FROM accounts ORDER BY name")
+    print("\nFinal balances:")
+    for account in balances:
+        print("  {}: ${}".format(account["name"], account["balance"]))
     
     db.close()
 
@@ -1939,15 +2095,14 @@ db.update("users", {"status": "active"}, ["id = ?", user_id])
 
 ## Error Handling
 
-The module provides clear error messages for common issues. In Starlark, errors cause the script to fail immediately with a non-zero exit code, which can be caught by the calling shell script:
+### Database Operations
+
+Most database operations cause the script to fail immediately with a non-zero exit code when errors occur:
 
 ```python
 load("sqlite", "connect")
 
 def main():
-    # In Starlark, database operations that fail will automatically
-    # cause the script to exit with an error message
-    
     # Check if database file exists before connecting (if needed)
     db = connect("myapp.db")
     
@@ -1967,18 +2122,52 @@ def main():
 main()
 ```
 
-**Shell script error handling:**
+### Transaction Error Handling
 
-```bash
-#!/bin/bash
+**New:** Transaction operations return `OperationResult` objects that allow graceful error handling without script termination:
 
-# Run the Starlark script and capture exit code
-if starcli database_script.star; then
-    echo "Database operations successful"
-else
-    echo "Database operations failed with exit code $?"
-    # Handle the error as needed
-fi
+```python
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    
+    # Create test table
+    db.create_table("accounts", {
+        "id": "INTEGER PRIMARY KEY",
+        "name": "TEXT NOT NULL",
+        "balance": "REAL CHECK (balance >= 0)"
+    })
+    
+    # Start transaction
+    tx = db.begin()
+    
+    # Execute operations with error checking
+    insert_result = tx.execute("INSERT INTO accounts (name, balance) VALUES (?, ?)", ["Alice", 1000])
+    if not insert_result.ok:
+        print("Insert failed:", insert_result.error)
+        tx.rollback()
+        fail("Transaction aborted")
+    
+    # Query with error checking
+    balance_result = tx.query_one("SELECT balance FROM accounts WHERE name = ?", ["Alice"])
+    if not balance_result.ok:
+        print("Query failed:", balance_result.error)
+        tx.rollback()
+        fail("Transaction aborted")
+    
+    print("Current balance:", balance_result.value["balance"])
+    
+    # Commit with error checking
+    commit_result = tx.commit()
+    if not commit_result.ok:
+        print("Commit failed:", commit_result.error)
+        fail("Transaction commit failed")
+    
+    print("Transaction completed successfully")
+    db.close()
+
+main()
 ```
 
 ## Performance Tips
