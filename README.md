@@ -433,6 +433,7 @@ if not balance_result.value or balance_result.value["balance"] < 100:
 #### Transaction Object Methods
 
 **Note:** Transaction methods now return `OperationResult` objects for better error handling. Each result has:
+
 - `result.ok` (bool): Whether the operation succeeded
 - `result.error` (string): Error message if operation failed
 - `result.value`: The actual result value if operation succeeded
