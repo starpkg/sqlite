@@ -396,7 +396,7 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"values", &values,
-		"keys", &keyColumnsVal); err != nil {
+		"conflict_columns", &keyColumnsVal); err != nil {
 		return nil, err
 	}
 
@@ -428,14 +428,14 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 			quoteName(string(colName)), quoteName(string(colName))))
 	}
 
-	// Extract key columns using extractColumns
+	// Extract conflict columns using extractColumns
 	conflictTarget, err := extractColumns(keyColumnsVal)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract key columns: %w", err)
+		return nil, fmt.Errorf("failed to extract conflict columns: %w", err)
 	}
 
 	if len(conflictTarget) == 0 {
-		return nil, fmt.Errorf("at least one key column must be specified for upsert")
+		return nil, fmt.Errorf("at least one conflict column must be specified for upsert")
 	}
 
 	// Build SQL statement with UPSERT syntax (INSERT OR REPLACE)
