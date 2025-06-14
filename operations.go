@@ -2,11 +2,31 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"go.starlark.net/starlark"
+	sqlite "modernc.org/sqlite"
 )
+
+// isTableAlreadyExistsError checks if the error is specifically about a table already existing.
+// Uses SQLite's semantic error codes rather than string matching.
+func isTableAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if it's a SQLite error with the appropriate error code
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		// Check for SQLITE_ERROR (1) which is used for "table already exists"
+		// and also check the message contains "already exists" to be more specific
+		return sqliteErr.Code() == 1 && strings.Contains(strings.ToLower(sqliteErr.Error()), "already exists")
+	}
+
+	return false
+}
 
 // createTable creates a new table with the specified columns, optional constraints, and indexes.
 func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -14,12 +34,14 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	var columns *starlark.Dict
 	var constraintsVal starlark.Value
 	var indexesVal starlark.Value
+	var existOk bool
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"columns", &columns,
 		"constraints?", &constraintsVal,
-		"indexes?", &indexesVal); err != nil {
+		"indexes?", &indexesVal,
+		"exist_ok?", &existOk); err != nil {
 		return nil, err
 	}
 
@@ -55,6 +77,10 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	_, err = tx.Exec(query)
 	if err != nil {
 		tx.Rollback()
+		// Handle exist_ok case: ignore "table already exists" errors
+		if existOk && isTableAlreadyExistsError(err) {
+			return starlark.None, nil
+		}
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
@@ -370,7 +396,7 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
 		"table", &table,
 		"values", &values,
-		"keys", &keyColumnsVal); err != nil {
+		"conflict_columns", &keyColumnsVal); err != nil {
 		return nil, err
 	}
 
@@ -402,14 +428,14 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 			quoteName(string(colName)), quoteName(string(colName))))
 	}
 
-	// Extract key columns using extractColumns
+	// Extract conflict columns using extractColumns
 	conflictTarget, err := extractColumns(keyColumnsVal)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract key columns: %w", err)
+		return nil, fmt.Errorf("failed to extract conflict columns: %w", err)
 	}
 
 	if len(conflictTarget) == 0 {
-		return nil, fmt.Errorf("at least one key column must be specified for upsert")
+		return nil, fmt.Errorf("at least one conflict column must be specified for upsert")
 	}
 
 	// Build SQL statement with UPSERT syntax (INSERT OR REPLACE)
