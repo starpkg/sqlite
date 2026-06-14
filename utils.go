@@ -155,7 +155,7 @@ func convertStarlarkParams(params starlark.Sequence) ([]interface{}, error) {
 // ============================================================================
 
 // processQueryRows processes SQL query results and converts them to Starlark values.
-func processQueryRows(rows *sql.Rows) (starlark.Value, error) {
+func processQueryRows(rows *sql.Rows, maxRows int) (starlark.Value, error) {
 	defer rows.Close()
 
 	// Get column names
@@ -166,7 +166,12 @@ func processQueryRows(rows *sql.Rows) (starlark.Value, error) {
 
 	// Convert result rows to a Starlark list of dicts
 	resultList := &starlark.List{}
+	rowCount := 0
 	for rows.Next() {
+		if maxRows > 0 && rowCount >= maxRows {
+			return nil, fmt.Errorf("query result exceeds max_rows limit (%d)", maxRows)
+		}
+
 		rowDict, err := scanRowToDict(rows, cols)
 		if err != nil {
 			return nil, err
@@ -176,6 +181,7 @@ func processQueryRows(rows *sql.Rows) (starlark.Value, error) {
 		if err := resultList.Append(rowDict); err != nil {
 			return nil, err
 		}
+		rowCount++
 	}
 
 	// Check for errors after iteration

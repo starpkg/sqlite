@@ -1,15 +1,41 @@
 package sqlite
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/1set/starlet"
 	"github.com/starpkg/base"
+	"go.starlark.net/starlark"
 )
 
 // TestStarlarkScripts runs Starlark test scripts from the test directory.
 // Scripts with "test-" prefix should succeed, "panic-" prefix should fail.
 func TestStarlarkScripts(t *testing.T) {
+	scriptDir := filepath.Join("..", "test", ModuleName)
+	runDir := filepath.Join(t.TempDir(), ModuleName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("failed to create Starlark test run directory: %v", err)
+	}
+
+	scripts, err := filepath.Glob(filepath.Join(scriptDir, "*.star"))
+	if err != nil {
+		t.Fatalf("failed to list Starlark tests: %v", err)
+	}
+	for _, scriptPath := range scripts {
+		content, err := os.ReadFile(scriptPath)
+		if err != nil {
+			t.Fatalf("failed to read %q: %v", scriptPath, err)
+		}
+		dst := filepath.Join(runDir, filepath.Base(scriptPath))
+		if err := os.WriteFile(dst, content, 0o644); err != nil {
+			t.Fatalf("failed to copy %q: %v", scriptPath, err)
+		}
+	}
+
 	// Create a module factory function that returns a fresh module loader for each test
 	moduleFactory := func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
@@ -17,7 +43,298 @@ func TestStarlarkScripts(t *testing.T) {
 	extraModules := []string{"go_idiomatic"}
 
 	// Use the helper function from the base package
-	base.RunStarlarkTests(t, ModuleName, moduleFactory, extraModules, "")
+	base.RunStarlarkTests(t, ModuleName, moduleFactory, extraModules, runDir)
+}
+
+func testConfigOption[T any](name, description string, value T) *base.ConfigOption[T] {
+	return genConfigOption(name, description, value).WithValue(value)
+}
+
+func newTestModuleWithConfig(database string, maxRows int, restrictFileAccess bool) *Module {
+	m := newModuleWithOptions(
+		testConfigOption(configKeyDatabase, "Path to SQLite database (use :memory: for in-memory)", database),
+		testConfigOption(configKeyTimeout, "Connection timeout in seconds", defaultTimeout),
+		testConfigOption(configKeyBusyTimeout, "Busy timeout in seconds", defaultBusyTimeout),
+		testConfigOption(configKeyForeignKeys, "Enable foreign key constraints", defaultForeignKeys),
+		testConfigOption(configKeyJournalMode, "Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF)", defaultJournalMode),
+		testConfigOption(configKeySynchronous, "Synchronous mode (FULL, NORMAL, OFF)", defaultSynchronous),
+		testConfigOption(configKeyCacheSize, "Cache size in number of pages", defaultCacheSize),
+		testConfigOption(configKeyMaxRows, "Maximum rows returned by query helpers (0 means unlimited)", maxRows),
+	)
+	m.restrictFileAccess = restrictFileAccess
+	return m
+}
+
+func runSQLiteScript(t *testing.T, script string, moduleFactory func() starlet.ModuleLoader) error {
+	t.Helper()
+
+	s := starlet.NewDefault()
+	s.AddLazyloadModules(map[string]starlet.ModuleLoader{
+		ModuleName: moduleFactory(),
+	})
+	_, err := s.RunScript([]byte(script), nil)
+	return err
+}
+
+func requireSQLiteScript(t *testing.T, script string, moduleFactory func() starlet.ModuleLoader) {
+	t.Helper()
+
+	if err := runSQLiteScript(t, script, moduleFactory); err != nil {
+		t.Fatalf("script failed: %v", err)
+	}
+}
+
+func requireSQLiteScriptErrorContains(t *testing.T, script string, moduleFactory func() starlet.ModuleLoader, want string) {
+	t.Helper()
+
+	err := runSQLiteScript(t, script, moduleFactory)
+	if err == nil {
+		t.Fatalf("expected script error containing %q", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected script error containing %q, got %v", want, err)
+	}
+}
+
+func quoteStarlarkString(s string) string {
+	return fmt.Sprintf("%q", s)
+}
+
+func TestMaxRows(t *testing.T) {
+	const unrestrictedScript = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)")
+    for i in range(10):
+        db.execute("INSERT INTO rows (id) VALUES (?)", [i])
+
+    queried = db.query("SELECT id FROM rows ORDER BY id")
+    if len(queried) != 10:
+        fail("expected 10 queried rows, got {}".format(len(queried)))
+
+    selected = db.select("rows", ["id"], order_by="id")
+    if len(selected) != 10:
+        fail("expected 10 selected rows, got {}".format(len(selected)))
+
+    stmt = db.prepare_query("SELECT id FROM rows ORDER BY id")
+    prepared = stmt.query()
+    if len(prepared) != 10:
+        fail("expected 10 prepared rows, got {}".format(len(prepared)))
+    stmt.close()
+
+    tx = db.begin()
+    tx_result = tx.query("SELECT id FROM rows ORDER BY id")
+    if not tx_result.ok:
+        fail("transaction query failed: {}".format(tx_result.error))
+    if len(tx_result.value) != 10:
+        fail("expected 10 transaction rows, got {}".format(len(tx_result.value)))
+    tx.rollback()
+
+    db.close()
+
+main()
+`
+
+	t.Run("unlimited", func(t *testing.T) {
+		requireSQLiteScript(t, unrestrictedScript, func() starlet.ModuleLoader {
+			return newTestModuleWithConfig(defaultDatabase, 0, false).LoadModule()
+		})
+	})
+
+	const atLimitScript = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)")
+    for i in range(3):
+        db.execute("INSERT INTO rows (id) VALUES (?)", [i])
+
+    if len(db.query("SELECT id FROM rows ORDER BY id")) != 3:
+        fail("db.query should allow rows at the limit")
+    if len(db.select("rows", ["id"], order_by="id")) != 3:
+        fail("db.select should allow rows at the limit")
+
+    stmt = db.prepare_query("SELECT id FROM rows ORDER BY id")
+    if len(stmt.query()) != 3:
+        fail("prepared query should allow rows at the limit")
+    stmt.close()
+
+    tx = db.begin()
+    tx_result = tx.query("SELECT id FROM rows ORDER BY id")
+    if not tx_result.ok:
+        fail("transaction query should allow rows at the limit: {}".format(tx_result.error))
+    if len(tx_result.value) != 3:
+        fail("transaction query should return rows at the limit")
+    tx.rollback()
+
+    db.close()
+
+main()
+`
+
+	t.Run("at limit", func(t *testing.T) {
+		requireSQLiteScript(t, atLimitScript, func() starlet.ModuleLoader {
+			return newTestModuleWithConfig(defaultDatabase, 3, false).LoadModule()
+		})
+	})
+
+	const exceedsQueryScript = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)")
+    for i in range(3):
+        db.execute("INSERT INTO rows (id) VALUES (?)", [i])
+    db.query("SELECT id FROM rows ORDER BY id")
+
+main()
+`
+
+	t.Run("db query exceeds", func(t *testing.T) {
+		requireSQLiteScriptErrorContains(t, exceedsQueryScript, func() starlet.ModuleLoader {
+			return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
+		}, "query result exceeds max_rows limit (2)")
+	})
+
+	const exceedsTransactionScript = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE rows (id INTEGER PRIMARY KEY)")
+    for i in range(3):
+        db.execute("INSERT INTO rows (id) VALUES (?)", [i])
+
+    tx = db.begin()
+    tx_result = tx.query("SELECT id FROM rows ORDER BY id")
+    if tx_result.ok:
+        fail("transaction query should have failed")
+    if "query result exceeds max_rows limit (2)" not in tx_result.error:
+        fail("unexpected transaction query error: {}".format(tx_result.error))
+    tx.rollback()
+    db.close()
+
+main()
+`
+
+	t.Run("transaction query exceeds", func(t *testing.T) {
+		requireSQLiteScript(t, exceedsTransactionScript, func() starlet.ModuleLoader {
+			return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
+		})
+	})
+}
+
+func TestFileAccessRestriction(t *testing.T) {
+	restrictedErr := "file database access is restricted by the host; only in-memory or the host-configured database is allowed"
+
+	t.Run("default allows file database", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "default.db")
+		script := fmt.Sprintf(`
+load("sqlite", "connect")
+
+def main():
+    db = connect(database=%s)
+    db.execute("CREATE TABLE t (id INTEGER)")
+    db.close()
+
+main()
+`, quoteStarlarkString(dbPath))
+
+		requireSQLiteScript(t, script, func() starlet.ModuleLoader {
+			return NewModule().LoadModule()
+		})
+	})
+
+	t.Run("restricted rejects file database", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "restricted.db")
+		script := fmt.Sprintf(`
+load("sqlite", "connect")
+
+def main():
+    connect(database=%s)
+
+main()
+`, quoteStarlarkString(dbPath))
+
+		requireSQLiteScriptErrorContains(t, script, func() starlet.ModuleLoader {
+			return NewModuleWithFileAccess(false).LoadModule()
+		}, restrictedErr)
+	})
+
+	t.Run("restricted allows memory database", func(t *testing.T) {
+		const script = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE t (id INTEGER)")
+    db.close()
+
+main()
+`
+
+		requireSQLiteScript(t, script, func() starlet.ModuleLoader {
+			return NewModuleWithFileAccess(false).LoadModule()
+		})
+	})
+
+	t.Run("restricted allows host configured database", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "host.db")
+		t.Setenv("SQLITE_DATABASE", dbPath)
+		const script = `
+load("sqlite", "connect")
+
+def main():
+    db = connect()
+    db.execute("CREATE TABLE t (id INTEGER)")
+    db.close()
+
+main()
+`
+
+		requireSQLiteScript(t, script, func() starlet.ModuleLoader {
+			return NewModuleWithFileAccess(false).LoadModule()
+		})
+	})
+
+	t.Run("restricted rejects file attach", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "attached.db")
+		script := fmt.Sprintf(`
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.attach(%s, "attached")
+
+main()
+`, quoteStarlarkString(dbPath))
+
+		requireSQLiteScriptErrorContains(t, script, func() starlet.ModuleLoader {
+			return NewModuleWithFileAccess(false).LoadModule()
+		}, "file database attach is restricted by the host; only in-memory databases are allowed")
+	})
+}
+
+func TestPanickingRegisteredFunctionReturnsError(t *testing.T) {
+	regFunc := &registeredFunction{
+		name: "TEST_PANIC",
+		starlarkFunc: starlark.NewBuiltin("TEST_PANIC", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+			panic("boom")
+		}),
+	}
+
+	wrapper := createGoFunctionWrapper(regFunc)
+	_, err := wrapper(nil, nil)
+	if err == nil {
+		t.Fatal("expected panic to be returned as an error")
+	}
+	if !strings.Contains(err.Error(), `custom function "TEST_PANIC" panicked: boom`) {
+		t.Fatalf("unexpected panic error: %v", err)
+	}
 }
 
 func TestExamples(t *testing.T) {

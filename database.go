@@ -16,12 +16,18 @@ import (
 // database represents a SQLite database connection.
 // All database operations are performed via methods on *database.
 type database struct {
-	db *sql.DB
+	db                 *sql.DB
+	maxRows            int
+	restrictFileAccess bool
 }
 
 // newDatabaseInstance creates a new Starlark database instance.
-func newDatabaseInstance(db *sql.DB) *starlarkstruct.Module {
-	dbi := &database{db: db}
+func newDatabaseInstance(db *sql.DB, maxRows int, restrictFileAccess bool) *starlarkstruct.Module {
+	dbi := &database{
+		db:                 db,
+		maxRows:            maxRows,
+		restrictFileAccess: restrictFileAccess,
+	}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -255,7 +261,7 @@ func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args st
 	}
 
 	// Use shared utility to process rows
-	return processQueryRows(rows)
+	return processQueryRows(rows, db.maxRows)
 }
 
 // queryOne executes a SQL query and returns the first row, or None if no rows are returned.
@@ -298,7 +304,7 @@ func (db *database) begin(thread *starlark.Thread, fn *starlark.Builtin, args st
 	}
 
 	// Create transaction object
-	return newTransactionInstance(tx), nil
+	return newTransactionInstance(tx, db.maxRows), nil
 }
 
 // attach attaches another database with an alias.
@@ -310,6 +316,10 @@ func (db *database) attach(thread *starlark.Thread, fn *starlark.Builtin, args s
 		"database", &database,
 		"alias", &alias); err != nil {
 		return nil, err
+	}
+
+	if db.restrictFileAccess && !isInMemoryDSN(database) {
+		return nil, fmt.Errorf("file database attach is restricted by the host; only in-memory databases are allowed")
 	}
 
 	// Execute ATTACH DATABASE statement
@@ -518,7 +528,7 @@ func (db *database) prepare(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Create prepared statement object
-	return newPreparedStatementInstance(stmt), nil
+	return newPreparedStatementInstance(stmt, db.maxRows), nil
 }
 
 // prepareQuery prepares a SQL query statement.
@@ -537,5 +547,5 @@ func (db *database) prepareQuery(thread *starlark.Thread, fn *starlark.Builtin, 
 	}
 
 	// Create prepared query object
-	return newPreparedQueryInstance(stmt), nil
+	return newPreparedQueryInstance(stmt, db.maxRows), nil
 }

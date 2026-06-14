@@ -675,7 +675,7 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Use shared utility to process rows
-	return processQueryRows(rows)
+	return processQueryRows(rows, db.maxRows)
 }
 
 // count counts records in a table.

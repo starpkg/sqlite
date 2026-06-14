@@ -126,7 +126,17 @@ func doRegisterFunction(name string, funcVal starlark.Callable, numArgs int32, d
 
 // createGoFunctionWrapper creates a Go function that bridges Starlark to SQLite.
 func createGoFunctionWrapper(regFunc *registeredFunction) func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-	return func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+	return func(ctx *sqlite.FunctionContext, args []driver.Value) (retVal driver.Value, retErr error) {
+		// A custom function runs arbitrary Starlark inside the SQLite driver's
+		// scalar-function callback. Recover any panic and surface it as an error
+		// so script input can never crash the host (hardening invariant).
+		defer func() {
+			if r := recover(); r != nil {
+				retVal = nil
+				retErr = fmt.Errorf("custom function %q panicked: %v", regFunc.name, r)
+			}
+		}()
+
 		// Create new thread for this function call
 		thread := &starlark.Thread{
 			Name: fmt.Sprintf("custom_function_%s", regFunc.name),

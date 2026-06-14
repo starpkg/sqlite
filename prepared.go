@@ -16,12 +16,13 @@ import (
 // preparedStmt represents a prepared statement struct with methods
 // directly attached, providing cleaner and more idiomatic Go code.
 type preparedStmt struct {
-	stmt *sql.Stmt
+	stmt    *sql.Stmt
+	maxRows int
 }
 
 // newPreparedStatementInstance creates a new Starlark prepared statement instance.
-func newPreparedStatementInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt}
+func newPreparedStatementInstance(stmt *sql.Stmt, maxRows int) *starlarkstruct.Module {
+	ps := &preparedStmt{stmt: stmt, maxRows: maxRows}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -33,8 +34,8 @@ func newPreparedStatementInstance(stmt *sql.Stmt) *starlarkstruct.Module {
 }
 
 // newPreparedQueryInstance creates a new Starlark prepared query instance.
-func newPreparedQueryInstance(stmt *sql.Stmt) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt}
+func newPreparedQueryInstance(stmt *sql.Stmt, maxRows int) *starlarkstruct.Module {
+	ps := &preparedStmt{stmt: stmt, maxRows: maxRows}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -115,7 +116,7 @@ func (ps *preparedStmt) query(thread *starlark.Thread, fn *starlark.Builtin, arg
 	}
 
 	// Use shared utility to process rows
-	return processQueryRows(rows)
+	return processQueryRows(rows, ps.maxRows)
 }
 
 // queryOne executes a prepared query and returns the first row, or None if no rows are returned.

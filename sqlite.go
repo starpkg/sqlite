@@ -4,6 +4,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ const (
 	defaultCacheSize = -2000 // Default cache size. A negative value (e.g., -2000) instructs SQLite to use its
 	//   default page cache size (typically 2000 pages, e.g., 8MB if page size is 4KB).
 	//   A positive value sets the cache size in number of pages. 0 means no cache. The TEMP database has a default suggested cache size of 0 pages.
+	defaultMaxRows = 0 // Default maximum rows returned by query helpers. 0 means unlimited.
 )
 
 // Configuration key constants
@@ -49,6 +51,7 @@ const (
 	configKeyJournalMode = "journal_mode"
 	configKeySynchronous = "synchronous"
 	configKeyCacheSize   = "cache_size"
+	configKeyMaxRows     = "max_rows"
 )
 
 // ============================================================================
@@ -57,8 +60,9 @@ const (
 
 // Module wraps the ConfigurableModule with specific functionality for SQLite operations.
 type Module struct {
-	cfgMod *base.ConfigurableModule
-	ext    *base.ConfigurableModuleExt
+	cfgMod             *base.ConfigurableModule
+	ext                *base.ConfigurableModuleExt
+	restrictFileAccess bool
 }
 
 // NewModule creates a new module with default configuration.
@@ -71,7 +75,15 @@ func NewModule() *Module {
 		genConfigOption(configKeyJournalMode, "Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF)", defaultJournalMode),
 		genConfigOption(configKeySynchronous, "Synchronous mode (FULL, NORMAL, OFF)", defaultSynchronous),
 		genConfigOption(configKeyCacheSize, "Cache size in number of pages", defaultCacheSize),
+		genConfigOption(configKeyMaxRows, "Maximum rows returned by query helpers (0 means unlimited)", defaultMaxRows),
 	)
+}
+
+// NewModuleWithFileAccess creates a new module and optionally restricts file database access.
+func NewModuleWithFileAccess(allowed bool) *Module {
+	m := NewModule()
+	m.restrictFileAccess = !allowed
+	return m
 }
 
 // genConfigOption creates a configuration option with common settings.
@@ -92,6 +104,7 @@ func newModuleWithOptions(
 	journalModeOpt *base.ConfigOption[string],
 	synchronousOpt *base.ConfigOption[string],
 	cacheSizeOpt *base.ConfigOption[int],
+	maxRowsOpt *base.ConfigOption[int],
 ) *Module {
 	cm, _ := base.NewConfigurableModuleWithConfigOptions(
 		databaseOpt,
@@ -101,6 +114,7 @@ func newModuleWithOptions(
 		journalModeOpt,
 		synchronousOpt,
 		cacheSizeOpt,
+		maxRowsOpt,
 	)
 	return &Module{
 		cfgMod: cm,
@@ -154,6 +168,10 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	if database == "" {
 		database = m.ext.GetString(configKeyDatabase, defaultDatabase)
 	}
+	configuredDatabase := m.ext.GetString(configKeyDatabase, defaultDatabase)
+	if m.restrictFileAccess && !isInMemoryDSN(database) && database != configuredDatabase {
+		return nil, fmt.Errorf("file database access is restricted by the host; only in-memory or the host-configured database is allowed")
+	}
 	if timeout == 0 {
 		timeout = types.FloatOrInt(m.ext.GetFloat(configKeyTimeout, defaultTimeout))
 	}
@@ -178,6 +196,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	if cacheSize == 0 {
 		cacheSize = m.ext.GetInt(configKeyCacheSize, defaultCacheSize)
 	}
+	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
 
 	// Create a new database connection
 	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
@@ -186,7 +205,29 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 
 	// Create and return the database object
-	return newDatabaseInstance(db), nil
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+}
+
+// isInMemoryDSN reports whether a SQLite DSN refers to an in-memory (or private
+// temporary) database rather than a real file on disk. The check is deliberately
+// strict: a loose substring match on ":memory:" / "mode=memory" would let a file
+// DSN such as "file:/etc/passwd?x=:memory:" slip past the file-access restriction.
+func isInMemoryDSN(s string) bool {
+	switch {
+	case s == "", s == ":memory:":
+		// Empty = private temporary database; ":memory:" = the in-memory database.
+		return true
+	case strings.HasPrefix(s, "file::memory:"):
+		// Named in-memory database, e.g. "file::memory:?cache=shared".
+		return true
+	}
+	// Honour "mode=memory" only as a real query parameter, not as a substring.
+	if i := strings.IndexByte(s, '?'); i >= 0 {
+		if q, err := url.ParseQuery(s[i+1:]); err == nil && q.Get("mode") == "memory" {
+			return true
+		}
+	}
+	return false
 }
 
 // openDatabase creates a new SQLite database connection with the given options.
