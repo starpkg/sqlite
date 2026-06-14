@@ -137,12 +137,13 @@ def main():
 main()
 `
 
-	t.Run("unlimited", func(t *testing.T) {
-		requireSQLiteScript(t, unrestrictedScript, func() starlet.ModuleLoader {
-			return newTestModuleWithConfig(defaultDatabase, 0, false).LoadModule()
-		})
+	requireSQLiteScript(t, unrestrictedScript, func() starlet.ModuleLoader {
+		return newTestModuleWithConfig(defaultDatabase, 0, false).LoadModule()
 	})
+}
 
+// TestMaxRowsAtLimit verifies a result set exactly at the limit is allowed.
+func TestMaxRowsAtLimit(t *testing.T) {
 	const atLimitScript = `
 load("sqlite", "connect")
 
@@ -175,12 +176,13 @@ def main():
 main()
 `
 
-	t.Run("at limit", func(t *testing.T) {
-		requireSQLiteScript(t, atLimitScript, func() starlet.ModuleLoader {
-			return newTestModuleWithConfig(defaultDatabase, 3, false).LoadModule()
-		})
+	requireSQLiteScript(t, atLimitScript, func() starlet.ModuleLoader {
+		return newTestModuleWithConfig(defaultDatabase, 3, false).LoadModule()
 	})
+}
 
+// TestMaxRowsDBQueryExceeds verifies db.query past the limit returns an error.
+func TestMaxRowsDBQueryExceeds(t *testing.T) {
 	const exceedsQueryScript = `
 load("sqlite", "connect")
 
@@ -194,12 +196,13 @@ def main():
 main()
 `
 
-	t.Run("db query exceeds", func(t *testing.T) {
-		requireSQLiteScriptErrorContains(t, exceedsQueryScript, func() starlet.ModuleLoader {
-			return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
-		}, "query result exceeds max_rows limit (2)")
-	})
+	requireSQLiteScriptErrorContains(t, exceedsQueryScript, func() starlet.ModuleLoader {
+		return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
+	}, "query result exceeds max_rows limit (2)")
+}
 
+// TestMaxRowsTransactionExceeds verifies a tx query past the limit surfaces an error result.
+func TestMaxRowsTransactionExceeds(t *testing.T) {
 	const exceedsTransactionScript = `
 load("sqlite", "connect")
 
@@ -221,10 +224,8 @@ def main():
 main()
 `
 
-	t.Run("transaction query exceeds", func(t *testing.T) {
-		requireSQLiteScript(t, exceedsTransactionScript, func() starlet.ModuleLoader {
-			return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
-		})
+	requireSQLiteScript(t, exceedsTransactionScript, func() starlet.ModuleLoader {
+		return newTestModuleWithConfig(defaultDatabase, 2, false).LoadModule()
 	})
 }
 
