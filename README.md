@@ -23,7 +23,8 @@ A comprehensive Go module that brings the power of SQLite database operations to
 - ✅ Custom SQL functions for extending SQLite with Starlark logic
 - ✅ Automatic type conversion between SQLite and Starlark types
 - ✅ Configurable database settings (journal mode, synchronous mode, etc.)
-- ✅ Compatible with Go 1.18+ and cross-platform support
+- ✅ Remote/online databases over libSQL (`connect_remote`) — a self-hosted `sqld` or Turso Cloud, pure Go
+- ✅ Compatible with Go 1.20+ and cross-platform support (pure Go, no cgo)
 
 ## Installation
 
@@ -154,6 +155,32 @@ db = connect(
     synchronous="NORMAL",
     busy_timeout=10.0
 )
+```
+
+#### `connect_remote(url, auth_token?)`
+
+Connects to a **remote libSQL server** — a self-hosted [`sqld`](https://github.com/tursodatabase/libsql) or [Turso Cloud](https://turso.tech) — over a pure-Go client (no cgo). The returned object exposes the **same methods as a local connection** (`query`, `execute`, `insert`, transactions, …), because libSQL speaks the SQLite dialect.
+
+**Parameters:**
+
+- `url` (string): server URL, e.g. `libsql://my-db.turso.io`, `https://my-db.turso.io`, or `http://localhost:8080` for a local `sqld`.
+- `auth_token` (string, optional): auth token for the server (omit for an unauthenticated local `sqld`).
+
+**Returns:** Database object (same API as `connect`).
+
+**Example:**
+
+```python
+# Self-hosted sqld — e.g. docker run -p 8080:8080 ghcr.io/tursodatabase/libsql-server
+db = connect_remote("http://localhost:8080")
+
+# Turso Cloud (or any authenticated libSQL server)
+db = connect_remote("libsql://my-db.turso.io", auth_token="...")
+
+db.execute("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)")
+db.execute("INSERT INTO notes (body) VALUES (?)", ["hello from a remote db"])
+rows = db.query("SELECT * FROM notes")
+db.close()
 ```
 
 ### Database Object Methods
