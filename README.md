@@ -1,13 +1,14 @@
 # 🗃️ `sqlite` - Effortless SQLite operations in Starlark
 
+[![godoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite.svg)](https://pkg.go.dev/github.com/starpkg/sqlite)
+[![license](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
+
 A comprehensive Go module that brings the power of SQLite database operations to your Starlark scripts. This module provides both low-level SQL execution capabilities and high-level table management functions, making database interactions intuitive and straightforward while maintaining robust security features.
 
-**🚀 Featured:** Register custom SQL functions written in Starlark and call them directly in your SQL queries! See [Custom SQL Functions](#custom-sql-functions) for details.
+**Custom SQL functions:** Register SQL functions written in Starlark and call them directly in your SQL queries — see [Custom SQL Functions](#custom-sql-functions).
 
-**🆕 New in Latest Release:** Enhanced transaction error handling! Transaction methods now return `OperationResult` objects for graceful error handling without script termination. See [Advanced Transaction Error Handling](#advanced-transaction-error-handling) for details.
-
-[![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
-[![GoDoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite)](https://pkg.go.dev/github.com/starpkg/sqlite)
+**Transaction error handling:** Transaction methods return `OperationResult` objects for graceful error handling without script termination — see [Advanced Transaction Error Handling](#advanced-transaction-error-handling).
 
 ## Features
 
