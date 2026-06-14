@@ -16,5 +16,5 @@ jobs:
     # automate this).
     uses: 1set/meta/.github/workflows/go-ci.yml@467ad70ce9b105fbe0902e84c124196f56cb6f21
     with:
-      go-floor: "1.19"
+      go-floor: "1.20"
     secrets: inherit

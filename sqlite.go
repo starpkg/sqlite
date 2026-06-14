@@ -11,6 +11,7 @@ import (
 	"github.com/1set/starlet"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	"github.com/tursodatabase/libsql-client-go/libsql"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
 )
@@ -131,6 +132,7 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 	// Prepare methods dictionary
 	additionalFuncs := starlark.StringDict{
 		"connect":           starlark.NewBuiltin(ModuleName+".connect", m.connect),
+		"connect_remote":    starlark.NewBuiltin(ModuleName+".connect_remote", m.connectRemote),
 		"register_function": starlark.NewBuiltin(ModuleName+".register_function", registerFunction),
 	}
 
@@ -205,6 +207,41 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	}
 
 	// Create and return the database object
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+}
+
+// connectRemote opens a connection to a remote libSQL server — a self-hosted
+// sqld or Turso Cloud — over the pure-Go libSQL client (no cgo). The returned
+// object exposes the same query/exec/table API as a local connection, because
+// the libSQL remote client is a standard database/sql driver.
+func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var dbURL, authToken string
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
+		"url", &dbURL,
+		"auth_token?", &authToken,
+	); err != nil {
+		return nil, err
+	}
+	if dbURL == "" {
+		return nil, fmt.Errorf("connect_remote: url is required")
+	}
+
+	var opts []libsql.Option
+	if authToken != "" {
+		opts = append(opts, libsql.WithAuthToken(authToken))
+	}
+	connector, err := libsql.NewConnector(dbURL, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create remote connector: %w", err)
+	}
+
+	db := sql.OpenDB(connector)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to connect to remote database: %w", err)
+	}
+
+	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
 	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
 }
 

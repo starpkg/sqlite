@@ -2268,3 +2268,35 @@ main()
 		})
 	}
 }
+
+// TestConnectRemote exercises connect_remote against a libSQL server. It is an
+// integration test: set SQLITE_REMOTE_URL (e.g. "http://localhost:8080" for a
+// local sqld, or a Turso Cloud URL) and optionally SQLITE_REMOTE_AUTH_TOKEN.
+// Without SQLITE_REMOTE_URL it skips, so CI and offline runs are unaffected.
+func TestConnectRemote(t *testing.T) {
+	remoteURL := os.Getenv("SQLITE_REMOTE_URL")
+	if remoteURL == "" {
+		t.Skip("set SQLITE_REMOTE_URL (e.g. http://localhost:8080 for a local sqld) to run the remote integration test")
+	}
+	authToken := os.Getenv("SQLITE_REMOTE_AUTH_TOKEN")
+	script := fmt.Sprintf(`
+load("sqlite", "connect_remote")
+
+def main():
+    db = connect_remote(%q, auth_token=%q)
+    db.execute("DROP TABLE IF EXISTS remote_smoke")
+    db.execute("CREATE TABLE remote_smoke (id INTEGER PRIMARY KEY, name TEXT)")
+    db.execute("INSERT INTO remote_smoke (id, name) VALUES (?, ?)", [1, "star"])
+    rows = db.query("SELECT id, name FROM remote_smoke ORDER BY id")
+    if len(rows) != 1:
+        fail("expected 1 row, got {}".format(len(rows)))
+    if rows[0]["name"] != "star":
+        fail("unexpected name: {}".format(rows[0]["name"]))
+    db.close()
+
+main()
+`, remoteURL, authToken)
+	requireSQLiteScript(t, script, func() starlet.ModuleLoader {
+		return NewModule().LoadModule()
+	})
+}
