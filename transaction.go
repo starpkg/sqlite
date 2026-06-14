@@ -130,12 +130,13 @@ func (r *OperationResult) Index(i int) starlark.Value {
 
 // transaction represents a database transaction.
 type transaction struct {
-	tx *sql.Tx
+	tx      *sql.Tx
+	maxRows int
 }
 
 // newTransactionInstance creates a new Starlark transaction instance.
-func newTransactionInstance(tx *sql.Tx) *starlarkstruct.Module {
-	txObj := &transaction{tx: tx}
+func newTransactionInstance(tx *sql.Tx, maxRows int) *starlarkstruct.Module {
+	txObj := &transaction{tx: tx, maxRows: maxRows}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -205,7 +206,7 @@ func (tx *transaction) query(thread *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Use shared utility to process rows
-	result, err := processQueryRows(rows)
+	result, err := processQueryRows(rows, tx.maxRows)
 	if err != nil {
 		return newErrorResult(err), nil
 	}
