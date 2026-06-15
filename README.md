@@ -104,6 +104,7 @@ The `sqlite` module can be configured with the following options (all optional, 
 | `journal_mode` | string | `DELETE` | `SQLITE_JOURNAL_MODE` | Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF) |
 | `synchronous` | string | `FULL` | `SQLITE_SYNCHRONOUS` | Synchronous mode (FULL, NORMAL, OFF) |
 | `cache_size` | int | -2000 | `SQLITE_CACHE_SIZE` | Cache size in number of pages (negative = default) |
+| `max_rows` | int | 0 | `SQLITE_MAX_ROWS` | Max rows a query helper returns; `0` = unlimited (see Host hardening) |
 
 Module options serve as defaults and will be used when corresponding arguments are not provided to connection functions.
 
@@ -120,6 +121,29 @@ module := sqlite.NewModule()
 // Method 3: Configure programmatically (using the base module system)
 // See base package documentation for advanced configuration
 ```
+
+### Host hardening (opt-in)
+
+The module runs scripts the host may not fully trust. Two **opt-in** levers let the host bound what a script can reach. Both default to **off**, so existing scripts keep working unchanged.
+
+**1. Bound result size — `max_rows`.** A query helper (`query`, `execute`, … on a connection or transaction) materializes every returned row into memory. A hostile or buggy `SELECT` over a huge table can exhaust host memory. Set `max_rows` (config option or `SQLITE_MAX_ROWS`) to cap the number of rows any single query returns; exceeding the cap raises a script error instead of allocating without bound. `0` (the default) means unlimited.
+
+```go
+module := sqlite.NewModule()
+// or set SQLITE_MAX_ROWS=10000 in the environment
+```
+
+**2. Restrict file access — `NewModuleWithFileAccess`.** By default a script may `connect(path)` to any file path (or `attach` any database), which lets it open or create files anywhere the host process can write. `NewModuleWithFileAccess(false)` locks this down: scripts may only open **in-memory** databases (`:memory:`, `file::memory:…`, `mode=memory`) or the **one** `database` configured on the module — any other path, and any `attach` of an on-disk database, is rejected.
+
+```go
+// Allow file access (default — identical to NewModule):
+module := sqlite.NewModuleWithFileAccess(true)
+
+// Lock to in-memory + the configured database only:
+module := sqlite.NewModuleWithFileAccess(false)
+```
+
+> Note: `connect_remote` is unaffected by `NewModuleWithFileAccess` — it opens a network libSQL endpoint, not a local file. Gate remote access at the network/credential layer.
 
 ## Starlark API
 
