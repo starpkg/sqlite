@@ -62,6 +62,7 @@ Group by functional goal — **do not add one `*_test.go` per fix.** `example_te
 ## Documentation
 
 Three layers must stay in sync (enforced by the doc standard, `plan/starpkg文档标准（DOC-STD）`):
+
 - **`README.md`** — every script-facing builtin and object method documented as a backtick whole-word; host levers (`max_rows`, `NewModuleWithFileAccess`) under *Host hardening*. Function names/signatures must match the code.
 - **GoDoc** — package comment + a doc comment on every exported symbol (gated by `revive`'s `exported` rule in CI).
 
