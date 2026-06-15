@@ -3,6 +3,8 @@
 [![godoc](https://pkg.go.dev/badge/github.com/starpkg/sqlite.svg)](https://pkg.go.dev/github.com/starpkg/sqlite)
 [![license](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Go Report Card](https://goreportcard.com/badge/github.com/starpkg/sqlite)](https://goreportcard.com/report/github.com/starpkg/sqlite)
+[![codecov](https://codecov.io/gh/starpkg/sqlite/graph/badge.svg)](https://codecov.io/gh/starpkg/sqlite)
+![binary footprint](https://img.shields.io/badge/binary_footprint-%2B5.0_MB-blue)
 
 A comprehensive Go module that brings the power of SQLite database operations to your Starlark scripts. This module provides both low-level SQL execution capabilities and high-level table management functions, making database interactions intuitive and straightforward while maintaining robust security features.
 
