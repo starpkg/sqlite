@@ -811,9 +811,10 @@ contains:
 - `cid`: Column ID (int)
 - `name`: Column name (string)
 - `type`: Column type (string)
-- `notnull`: Whether the column is NOT NULL (bool)
-- `dflt_value`: Default value (or `None`)
-- `pk`: Whether the column is part of the primary key (bool)
+- `notnull`: `1` if the column is NOT NULL, else `0` (int)
+- `dflt_value`: Default value as a string (or `None`)
+- `pk`: `0` if the column is not part of the primary key, otherwise its
+  1-based position in the primary key (int)
 
 **Example:**
 
@@ -950,6 +951,7 @@ both for query results and for arguments/returns of custom SQL functions.
 | REAL        | float         |
 | TEXT        | string        |
 | BLOB        | bytes         |
+| timestamp   | time          |
 
 ### Starlark to SQLite
 
@@ -961,6 +963,7 @@ both for query results and for arguments/returns of custom SQL functions.
 | string        | TEXT        | |
 | bytes         | BLOB        | |
 | bool          | INTEGER     | True to 1, False to 0 |
+| time          | timestamp   | `go.starlark.net/lib/time` value |
 | dict          | TEXT        | JSON encoded |
 | list          | TEXT        | JSON encoded |
 
