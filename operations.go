@@ -4,11 +4,43 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"go.starlark.net/starlark"
 	sqlite "modernc.org/sqlite"
 )
+
+// orderByTermPattern matches a single ORDER BY term: a column identifier
+// (bare like `col`, dotted like `tbl.col`, or double-quoted/backtick-quoted),
+// followed by an optional ASC/DESC direction and an optional NULLS FIRST/LAST
+// modifier (all case-insensitive). Identifiers are restricted to
+// letters/digits/underscore so no SQL syntax (parens, semicolons, comments,
+// operators, spaces-in-names, arbitrary keywords) can slip through.
+var orderByTermPattern = regexp.MustCompile(
+	`^(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+"|` + "`[^`]+`)" +
+		`(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+"|` + "`[^`]+`))?" +
+		`(?i:\s+(?:ASC|DESC))?` +
+		`(?i:\s+NULLS\s+(?:FIRST|LAST))?$`,
+)
+
+// validateOrderBy validates an order_by clause before it is interpolated into
+// a SQL statement. ORDER BY cannot be parameterized, so the value is checked
+// against a strict whitelist instead: a comma-separated list of column
+// identifiers, each with an optional ASC/DESC and optional NULLS FIRST/LAST.
+// Anything else is rejected to close the raw-interpolation injection surface.
+func validateOrderBy(orderBy string) error {
+	if strings.TrimSpace(orderBy) == "" {
+		return nil
+	}
+	for _, term := range strings.Split(orderBy, ",") {
+		t := strings.TrimSpace(term)
+		if t == "" || !orderByTermPattern.MatchString(t) {
+			return fmt.Errorf("invalid order_by clause: %q", orderBy)
+		}
+	}
+	return nil
+}
 
 // isTableAlreadyExistsError checks if the error is specifically about a table already existing.
 // Uses SQLite's semantic error codes rather than string matching.
@@ -653,8 +685,13 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 		query += " WHERE " + whereClause
 	}
 
-	// Add ORDER BY clause if provided
+	// Add ORDER BY clause if provided. order_by is interpolated raw (SQL does
+	// not allow bind parameters there), so validate it against a strict
+	// whitelist first to prevent injection.
 	if orderBy != "" {
+		if err := validateOrderBy(orderBy); err != nil {
+			return nil, err
+		}
 		query += " ORDER BY " + orderBy
 	}
 

@@ -5,12 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/1set/starlet"
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
 )
+
+// funcNameCounter makes custom-function names unique within a process. The
+// register_function registry is process-global, so reusing a name across runs
+// (e.g. under -count>1) would fail with "already registered"; a per-call suffix
+// keeps registration-based tests repeatable.
+var funcNameCounter int64
+
+func uniqueFuncName(prefix string) string {
+	return fmt.Sprintf("%s_%d", prefix, atomic.AddInt64(&funcNameCounter, 1))
+}
 
 // TestStarlarkScripts runs Starlark test scripts from the test directory.
 // Scripts with "test-" prefix should succeed, "panic-" prefix should fail.
@@ -2345,39 +2356,124 @@ func TestRegisteredFunctionOutOfRangeIntErrors(t *testing.T) {
 }
 
 // TestRegisteredFunctionBigIntScript exercises the same property end-to-end
-// through a query that calls the registered function.
+// through a query that calls the registered function. Function names are made
+// unique per run because the registry is process-global (so the test is
+// repeatable under -count>1).
 func TestRegisteredFunctionBigIntScript(t *testing.T) {
-	const bigScript = `
+	bigName := uniqueFuncName("BIG_VALUE")
+	bigScript := fmt.Sprintf(`
 load("sqlite", "connect", "register_function")
 
 def main():
-    register_function("BIG_VALUE", lambda: (1 << 100) + 7, num_args=0)
+    register_function(%q, lambda: (1 << 100) + 7, num_args=0)
     db = connect(":memory:")
     db.execute("CREATE TABLE t (id INTEGER)")
     db.execute("INSERT INTO t (id) VALUES (1)")
-    db.query("SELECT BIG_VALUE() FROM t")
+    db.query("SELECT %s() FROM t")
 
 main()
-`
+`, bigName, bigName)
 	requireSQLiteScriptErrorContains(t, bigScript, func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
 	}, "int value too large for SQLite")
 
-	const inRangeScript = `
+	sqName := uniqueFuncName("SQUARE")
+	inRangeScript := fmt.Sprintf(`
 load("sqlite", "connect", "register_function")
 
 def main():
-    register_function("SQUARE", lambda x: x * x, num_args=1)
+    register_function(%q, lambda x: x * x, num_args=1)
     db = connect(":memory:")
     db.execute("CREATE TABLE t (id INTEGER)")
     db.execute("INSERT INTO t (id) VALUES (9)")
-    rows = db.query("SELECT SQUARE(id) AS s FROM t")
+    rows = db.query("SELECT %s(id) AS s FROM t")
     if rows[0]["s"] != 81:
         fail("expected 81, got {}".format(rows[0]["s"]))
 
 main()
-`
+`, sqName, sqName)
 	requireSQLiteScript(t, inRangeScript, func() starlet.ModuleLoader {
+		return NewModule().LoadModule()
+	})
+}
+
+// ============================================================================
+// Hardening: order_by whitelist validation (PKG-26)
+//
+// order_by cannot be parameterized (SQL forbids bind params there) and is
+// interpolated into the statement, so it must be validated against a strict
+// whitelist: comma-separated (optionally dotted/quoted) column identifiers,
+// each with an optional ASC/DESC and optional NULLS FIRST/LAST. Anything else
+// (semicolons, parens, comments, arbitrary keywords) is rejected.
+// ============================================================================
+
+func TestSelectOrderByRejectsInjection(t *testing.T) {
+	payloads := []string{
+		"id; DROP TABLE t",
+		"id) ; --",
+		"id; DELETE FROM t",
+		"1; DROP TABLE t --",
+		"id /* comment */",
+		"id UNION SELECT 1",
+		"(SELECT 1)",
+		"id, (SELECT password FROM users)",
+		"name COLLATE NOCASE",
+		"bad name",
+	}
+	for _, payload := range payloads {
+		payload := payload
+		t.Run(payload, func(t *testing.T) {
+			script := fmt.Sprintf(`
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE t (id INTEGER, name TEXT)")
+    db.execute("INSERT INTO t (id, name) VALUES (1, 'a')")
+    db.select("t", "*", order_by=%s)
+
+main()
+`, quoteStarlarkString(payload))
+			requireSQLiteScriptErrorContains(t, script, func() starlet.ModuleLoader {
+				return NewModule().LoadModule()
+			}, "invalid order_by clause")
+		})
+	}
+}
+
+func TestSelectOrderByAllowsLegitClauses(t *testing.T) {
+	const script = `
+load("sqlite", "connect")
+
+def main():
+    db = connect(":memory:")
+    db.execute("CREATE TABLE t (id INTEGER, name TEXT, age INTEGER)")
+    for row in [(3, "c", 30), (1, "a", 10), (2, "b", 20)]:
+        db.execute("INSERT INTO t (id, name, age) VALUES (?, ?, ?)", list(row))
+
+    # Plain column name orders ascending.
+    by_name = db.select("t", ["name"], order_by="name")
+    if [r["name"] for r in by_name] != ["a", "b", "c"]:
+        fail("name ordering wrong: {}".format(by_name))
+
+    # Single column DESC.
+    by_age = db.select("t", ["age"], order_by="age DESC")
+    if [r["age"] for r in by_age] != [30, 20, 10]:
+        fail("age DESC ordering wrong: {}".format(by_age))
+
+    # Multiple columns with a trailing direction.
+    multi = db.select("t", ["id", "name"], order_by="id, name ASC")
+    if [r["id"] for r in multi] != [1, 2, 3]:
+        fail("multi ordering wrong: {}".format(multi))
+
+    # Dotted, quoted, and NULLS modifiers are accepted.
+    db.select("t", "*", order_by="t.id ASC")
+    db.select("t", "*", order_by='"name" DESC')
+    db.select("t", "*", order_by="age DESC NULLS LAST")
+
+main()
+`
+	requireSQLiteScript(t, script, func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
 	})
 }

@@ -117,7 +117,7 @@ Connection object methods:
 - `update(table, values, where?)` — update records.
 - `upsert(table, values, conflict_columns)` — insert or update on conflict.
 - `delete(table, where?)` — delete records.
-- `select(table, columns?, where?, order_by?, limit?, offset?)` — filtered/sorted read.
+- `select(table, columns?, where?, order_by?, limit?, offset?)` — filtered/sorted read (`order_by` is whitelist-validated, not parameterized).
 - `count(table, where?)` — count matching records.
 - `attach(database, alias)` / `detach(alias)` — multi-database operations.
 - `tables()` / `table_info(table)` / `indices(table)` — schema introspection.
