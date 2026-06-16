@@ -2300,3 +2300,84 @@ main()
 		return NewModule().LoadModule()
 	})
 }
+
+// ============================================================================
+// Hardening: custom-function return values (PKG-25)
+//
+// A custom SQL function whose return value does not fit an int64 must surface a
+// clean error instead of silently truncating to a wrong value, mirroring the
+// bind-parameter path (starlarkToSQLiteValue). In-range ints still round-trip.
+// ============================================================================
+
+func TestRegisteredFunctionOutOfRangeIntErrors(t *testing.T) {
+	// A function returning (1<<100)+7 cannot fit an int64; the wrapper must
+	// reject it with a clear error rather than returning 0 / a garbage value.
+	regFunc := &registeredFunction{
+		name: "TEST_BIGINT",
+		starlarkFunc: starlark.NewBuiltin("TEST_BIGINT", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+			big := starlark.MakeInt(1).Lsh(100)      // 1 << 100
+			return big.Add(starlark.MakeInt(7)), nil // (1<<100)+7
+		}),
+	}
+	wrapper := createGoFunctionWrapper(regFunc)
+	val, err := wrapper(nil, nil)
+	if err == nil {
+		t.Fatalf("expected out-of-range int return to error, got value %v", val)
+	}
+	if !strings.Contains(err.Error(), "int value too large for SQLite") {
+		t.Fatalf("unexpected error for out-of-range int: %v", err)
+	}
+
+	// An in-range int return must still round-trip unchanged.
+	okFunc := &registeredFunction{
+		name: "TEST_INRANGE",
+		starlarkFunc: starlark.NewBuiltin("TEST_INRANGE", func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
+			return starlark.MakeInt64(1234567890), nil
+		}),
+	}
+	got, err := createGoFunctionWrapper(okFunc)(nil, nil)
+	if err != nil {
+		t.Fatalf("in-range int return should not error: %v", err)
+	}
+	if got != int64(1234567890) {
+		t.Fatalf("expected in-range int 1234567890, got %v (%T)", got, got)
+	}
+}
+
+// TestRegisteredFunctionBigIntScript exercises the same property end-to-end
+// through a query that calls the registered function.
+func TestRegisteredFunctionBigIntScript(t *testing.T) {
+	const bigScript = `
+load("sqlite", "connect", "register_function")
+
+def main():
+    register_function("BIG_VALUE", lambda: (1 << 100) + 7, num_args=0)
+    db = connect(":memory:")
+    db.execute("CREATE TABLE t (id INTEGER)")
+    db.execute("INSERT INTO t (id) VALUES (1)")
+    db.query("SELECT BIG_VALUE() FROM t")
+
+main()
+`
+	requireSQLiteScriptErrorContains(t, bigScript, func() starlet.ModuleLoader {
+		return NewModule().LoadModule()
+	}, "int value too large for SQLite")
+
+	const inRangeScript = `
+load("sqlite", "connect", "register_function")
+
+def main():
+    register_function("SQUARE", lambda x: x * x, num_args=1)
+    db = connect(":memory:")
+    db.execute("CREATE TABLE t (id INTEGER)")
+    db.execute("INSERT INTO t (id) VALUES (9)")
+    rows = db.query("SELECT SQUARE(id) AS s FROM t")
+    if rows[0]["s"] != 81:
+        fail("expected 81, got {}".format(rows[0]["s"]))
+
+main()
+`
+	requireSQLiteScript(t, inRangeScript, func() starlet.ModuleLoader {
+		return NewModule().LoadModule()
+	})
+}
