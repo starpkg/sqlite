@@ -682,7 +682,13 @@ Selects records from a table with flexible filtering and sorting options.
   - `None`: No filtering
   - String: Simple where clause with no parameters (e.g. `"age > 18"`)
   - List: Where clause with parameters as `[condition, param1, param2, …]`
-- `order_by` (string): Optional ORDER BY clause (e.g. `"name ASC"`, `"age DESC"`)
+- `order_by` (string): Optional ORDER BY clause (e.g. `"name ASC"`, `"age DESC"`).
+  ORDER BY cannot be parameterized, so this value is validated against a strict
+  whitelist before use: a comma-separated list of column identifiers (bare,
+  dotted `table.col`, or double-quoted/backtick-quoted), each with an optional
+  `ASC`/`DESC` and optional `NULLS FIRST`/`NULLS LAST`. Anything else (raw SQL,
+  semicolons, parentheses, comments, other keywords) raises
+  `invalid order_by clause`.
 - `limit` (int): Optional maximum number of rows to return
 - `offset` (int): Optional number of rows to skip
 
@@ -879,6 +885,11 @@ Registers a custom SQL function that can be called from SQL queries.
 
 **Raises:** Error on failure (empty name, non-callable, `num_args < -1`,
 duplicate registration, etc.).
+
+> **Return values:** A function's return value is converted to a SQLite value
+> the same way bind parameters are. An integer return that does not fit a
+> signed 64-bit value raises `int value too large for SQLite` rather than
+> being silently truncated.
 
 **Example:**
 

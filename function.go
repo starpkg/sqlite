@@ -209,7 +209,13 @@ func starlarkToDriverValue(val starlark.Value) (driver.Value, error) {
 	case starlark.Bool:
 		return bool(v), nil
 	case starlark.Int:
-		i64, _ := v.Int64()
+		// Mirror the bind-parameter path (starlarkToSQLiteValue): an int that
+		// does not fit int64 must surface a clear error, never silently
+		// truncate to a wrong driver value.
+		i64, ok := v.Int64()
+		if !ok {
+			return nil, fmt.Errorf("int value too large for SQLite: %v", v)
+		}
 		return i64, nil
 	case starlark.Float:
 		return float64(v), nil
