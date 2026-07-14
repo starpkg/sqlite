@@ -1,10 +1,13 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/1set/starlet/dataconv"
+	"github.com/starpkg/base/util"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -19,14 +22,23 @@ type database struct {
 	db                 *sql.DB
 	maxRows            int
 	restrictFileAccess bool
+	opTimeout          time.Duration // per-operation deadline (0 = none)
+}
+
+// opContext derives the context bounding a single operation from the calling
+// script thread (so a cancelled thread aborts the query) plus the configured
+// per-operation timeout. The caller must invoke the returned cancel func.
+func (db *database) opContext(thread *starlark.Thread) (context.Context, context.CancelFunc) {
+	return util.OpContext(thread, db.opTimeout)
 }
 
 // newDatabaseInstance creates a new Starlark database instance.
-func newDatabaseInstance(db *sql.DB, maxRows int, restrictFileAccess bool) *starlarkstruct.Module {
+func newDatabaseInstance(db *sql.DB, maxRows int, restrictFileAccess bool, opTimeout time.Duration) *starlarkstruct.Module {
 	dbi := &database{
 		db:                 db,
 		maxRows:            maxRows,
 		restrictFileAccess: restrictFileAccess,
+		opTimeout:          opTimeout,
 	}
 
 	// Create dictionary of methods
@@ -108,7 +120,9 @@ func (db *database) execute(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Execute the query
-	result, err := db.db.Exec(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	result, err := db.db.ExecContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -132,7 +146,9 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 	}
 
 	// Begin transaction
-	tx, err := db.db.Begin()
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -205,7 +221,7 @@ func (db *database) batch(thread *starlark.Thread, fn *starlark.Builtin, args st
 		}
 
 		// Execute the query within transaction
-		result, err := tx.Exec(sqlQuery.query, sqlQuery.params...)
+		result, err := tx.ExecContext(ctx, sqlQuery.query, sqlQuery.params...)
 		if err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("query %d: failed to execute: %w", i, err)
@@ -255,7 +271,9 @@ func (db *database) query(thread *starlark.Thread, fn *starlark.Builtin, args st
 	}
 
 	// Execute the query
-	rows, err := db.db.Query(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -282,7 +300,9 @@ func (db *database) queryOne(thread *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Execute the query
-	rows, err := db.db.Query(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -297,14 +317,22 @@ func (db *database) begin(thread *starlark.Thread, fn *starlark.Builtin, args st
 		return nil, err
 	}
 
-	// Begin transaction
-	tx, err := db.db.Begin()
+	// Begin transaction. A transaction spans multiple later calls (execute →
+	// commit), so its context must live until commit/rollback — it is NOT the
+	// per-statement context and must NOT carry the per-operation deadline (which
+	// would abort a legitimately long-running transaction) nor be cancelled when
+	// begin() returns. Cancellation-only (timeout 0) still propagates a cancelled
+	// script thread; the cancel func is handed to the transaction and fired on
+	// commit/rollback.
+	ctx, cancel := util.OpContext(thread, 0)
+	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	// Create transaction object
-	return newTransactionInstance(tx, db.maxRows), nil
+	return newTransactionInstance(tx, db.maxRows, db.opTimeout, cancel), nil
 }
 
 // attach attaches another database with an alias.
@@ -324,7 +352,9 @@ func (db *database) attach(thread *starlark.Thread, fn *starlark.Builtin, args s
 
 	// Execute ATTACH DATABASE statement
 	query := fmt.Sprintf("ATTACH DATABASE ? AS %s", quoteName(alias))
-	_, err := db.db.Exec(query, database)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	_, err := db.db.ExecContext(ctx, query, database)
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach database: %w", err)
 	}
@@ -343,7 +373,9 @@ func (db *database) detach(thread *starlark.Thread, fn *starlark.Builtin, args s
 
 	// Execute DETACH DATABASE statement
 	query := fmt.Sprintf("DETACH DATABASE %s", quoteName(alias))
-	_, err := db.db.Exec(query)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	_, err := db.db.ExecContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detach database: %w", err)
 	}
@@ -358,7 +390,9 @@ func (db *database) tables(thread *starlark.Thread, fn *starlark.Builtin, args s
 	}
 
 	// Query tables
-	rows, err := db.db.Query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query tables: %w", err)
 	}
@@ -394,7 +428,9 @@ func (db *database) tableInfo(thread *starlark.Thread, fn *starlark.Builtin, arg
 	}
 
 	// Query table info
-	rows, err := db.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", quoteName(table)))
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteName(table)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query table info: %w", err)
 	}
@@ -459,7 +495,9 @@ func (db *database) indices(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Query indices
-	rows, err := db.db.Query("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=?", table)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query indices: %w", err)
 	}
@@ -504,7 +542,9 @@ func (db *database) tableExists(thread *starlark.Thread, fn *starlark.Builtin, a
 
 	// Query to check if table exists
 	var count int
-	err := db.db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	err := db.db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&count)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check if table exists: %w", err)
 	}
@@ -522,13 +562,15 @@ func (db *database) prepare(thread *starlark.Thread, fn *starlark.Builtin, args 
 	}
 
 	// Prepare statement
-	stmt, err := db.db.Prepare(query)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	stmt, err := db.db.PrepareContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare statement: %w", err)
 	}
 
 	// Create prepared statement object
-	return newPreparedStatementInstance(stmt, db.maxRows), nil
+	return newPreparedStatementInstance(stmt, db.maxRows, db.opTimeout), nil
 }
 
 // prepareQuery prepares a SQL query statement.
@@ -541,11 +583,13 @@ func (db *database) prepareQuery(thread *starlark.Thread, fn *starlark.Builtin, 
 	}
 
 	// Prepare statement
-	stmt, err := db.db.Prepare(query)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	stmt, err := db.db.PrepareContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare query: %w", err)
 	}
 
 	// Create prepared query object
-	return newPreparedQueryInstance(stmt, db.maxRows), nil
+	return newPreparedQueryInstance(stmt, db.maxRows, db.opTimeout), nil
 }

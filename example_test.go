@@ -1,10 +1,12 @@
 package sqlite
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -2476,4 +2478,89 @@ main()
 	requireSQLiteScript(t, script, func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
 	})
+}
+
+// --- STAR-75 / STAR-76: connection-pool semantics + cancellable operations ---
+
+// TestMemoryDBSingleConnection verifies an in-memory database keeps its schema
+// and data: because the pool is pinned to one connection, a later query never
+// lands on a second (empty) physical connection ("no such table" / lost rows).
+func TestMemoryDBSingleConnection(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO t VALUES (1)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for i := 0; i < 25; i++ {
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM t").Scan(&n); err != nil {
+			t.Fatalf("query %d: %v (memory data lost across connections)", i, err)
+		}
+		if n != 1 {
+			t.Fatalf("query %d: count=%d, want 1", i, n)
+		}
+	}
+}
+
+// TestForeignKeysAcrossConnections verifies foreign_keys is enforced on EVERY
+// pooled connection (set via the DSN, not once with db.Exec) — otherwise a later
+// connection falls back to SQLite's default OFF and constraint violations
+// silently succeed.
+func TestForeignKeysAcrossConnections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fk.db")
+	db, err := openDatabase(path, 5, true, "WAL", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(4)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var v int
+			if err := db.QueryRow("PRAGMA foreign_keys").Scan(&v); err != nil {
+				t.Errorf("pragma read: %v", err)
+				return
+			}
+			if v != 1 {
+				t.Errorf("foreign_keys=%d on a pooled connection, want 1", v)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestQueryRespectsThreadCancellation verifies a query is bound to the script
+// thread's context, so a cancelled thread aborts it (the fix for uncancellable
+// remote/slow queries that could hang the host).
+func TestQueryRespectsThreadCancellation(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	mod := newDatabaseInstance(db, 0, false, 0)
+	qVal, err := mod.Attr("query")
+	if err != nil || qVal == nil {
+		t.Fatalf("query attr: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+	thread := &starlark.Thread{}
+	thread.SetLocal("context", ctx)
+	_, callErr := starlark.Call(thread, qVal.(*starlark.Builtin), starlark.Tuple{starlark.String("SELECT * FROM t")}, nil)
+	if callErr == nil || !strings.Contains(callErr.Error(), "context canceled") {
+		t.Errorf("query on a cancelled thread: err = %v, want it to mention context canceled", callErr)
+	}
 }

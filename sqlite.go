@@ -11,6 +11,7 @@ import (
 	"github.com/1set/starlet"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	"github.com/starpkg/base/util"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
@@ -90,10 +91,7 @@ func NewModuleWithFileAccess(allowed bool) *Module {
 // genConfigOption creates a configuration option with common settings.
 // It sets up the name, description, default value, and environment variable.
 func genConfigOption[T any](name, description string, defaultValue T) *base.ConfigOption[T] {
-	return base.NewConfigOption(defaultValue).
-		WithName(name).
-		WithDescription(description).
-		WithEnvVar(strings.ToUpper(ModuleName + "_" + name))
+	return base.NewNamedConfigOption(ModuleName, name, description, defaultValue)
 }
 
 // newModuleWithOptions creates a Module with the given configuration options.
@@ -201,13 +199,24 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
 
 	// Create a new database connection
-	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
+	db, err := openDatabase(database, busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Create and return the database object
-	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+	// Create and return the database object. `timeout` now bounds each operation
+	// (via a per-query context), replacing its former misuse as the connection's
+	// max lifetime.
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess, secondsToDuration(timeout.GoFloat())), nil
+}
+
+// secondsToDuration converts a fractional-seconds timeout into a time.Duration.
+// A non-positive value means "no per-operation deadline".
+func secondsToDuration(sec float64) time.Duration {
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec * float64(time.Second))
 }
 
 // connectRemote opens a connection to a remote libSQL server — a self-hosted
@@ -236,13 +245,19 @@ func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, ar
 	}
 
 	db := sql.OpenDB(connector)
-	if err := db.Ping(); err != nil {
+	opTimeout := secondsToDuration(m.ext.GetFloat(configKeyTimeout, defaultTimeout))
+	// A remote connect/query is a network round-trip: bound the Ping (and, below,
+	// every query) with a context so an unreachable or slow host cannot block the
+	// host goroutine indefinitely and so a cancelled script thread aborts it.
+	pingCtx, cancel := util.OpContext(thread, opTimeout)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to connect to remote database: %w", err)
 	}
 
 	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
-	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess, opTimeout), nil
 }
 
 // isInMemoryDSN reports whether a SQLite DSN refers to an in-memory (or private
@@ -267,41 +282,70 @@ func isInMemoryDSN(s string) bool {
 	return false
 }
 
-// openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(connStr string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
-	// Open database connection
-	db, err := sql.Open("sqlite", connStr)
+// openDatabase creates a new local SQLite database connection. The connection
+// PRAGMAs are set through the DSN (modernc's _pragma= parameter) so they apply
+// to EVERY physical connection the pool opens; applying them once with db.Exec
+// only configures a single borrowed connection, leaving every later connection
+// on SQLite's defaults (notably foreign_keys OFF, so constraint-violating writes
+// silently succeed). An in-memory or private-temporary database is additionally
+// pinned to one never-recycled connection, because its schema and data live only
+// inside that connection — a second (empty) connection or a recycled one would
+// otherwise make earlier data vanish ("no such table").
+func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
+	dsn, err := appendPragmas(connStr, busyTimeout, foreignKeys, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, err
 	}
-
-	// Verify database connection with Ping
-	// This will catch database file accessibility issues early
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if isInMemoryDSN(connStr) {
+		db.SetMaxOpenConns(1)
+		db.SetConnMaxLifetime(0)
+		db.SetConnMaxIdleTime(0)
+	}
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
+	return db, nil
+}
 
-	// Configure connection options
-	pragmas := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", int(busyTimeout*1000)),
-		fmt.Sprintf("PRAGMA journal_mode = %s", journalMode),
-		fmt.Sprintf("PRAGMA synchronous = %s", synchronous),
-		fmt.Sprintf("PRAGMA cache_size = %d", cacheSize),
-		fmt.Sprintf("PRAGMA foreign_keys = %d", boolToInt(foreignKeys)),
+// pragmaIdentifier reports whether v is a bare alphanumeric PRAGMA keyword/value,
+// so it is safe to place into the DSN _pragma= expression without risking DSN or
+// statement injection (a value like "WAL); DROP …" is rejected).
+func pragmaIdentifier(v string) bool {
+	if v == "" {
+		return false
 	}
-
-	// Execute all pragmas
-	for _, pragma := range pragmas {
-		_, err = db.Exec(pragma)
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("failed to execute %s: %w", pragma, err)
+	for _, r := range v {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
 		}
 	}
+	return true
+}
 
-	// Set timeout
-	db.SetConnMaxLifetime(time.Duration(timeout * float64(time.Second)))
-
-	return db, nil
+// appendPragmas builds the DSN carrying the connection PRAGMAs as modernc
+// _pragma= parameters, so every pooled connection is configured identically.
+func appendPragmas(connStr string, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (string, error) {
+	if !pragmaIdentifier(journalMode) {
+		return "", fmt.Errorf("invalid journal_mode %q", journalMode)
+	}
+	if !pragmaIdentifier(synchronous) {
+		return "", fmt.Errorf("invalid synchronous %q", synchronous)
+	}
+	pragmas := []string{
+		fmt.Sprintf("_pragma=busy_timeout(%d)", int(busyTimeout*1000)),
+		fmt.Sprintf("_pragma=foreign_keys(%d)", boolToInt(foreignKeys)),
+		fmt.Sprintf("_pragma=journal_mode(%s)", journalMode),
+		fmt.Sprintf("_pragma=synchronous(%s)", synchronous),
+		fmt.Sprintf("_pragma=cache_size(%d)", cacheSize),
+	}
+	sep := "?"
+	if strings.Contains(connStr, "?") {
+		sep = "&"
+	}
+	return connStr + sep + strings.Join(pragmas, "&"), nil
 }

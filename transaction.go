@@ -1,10 +1,13 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/1set/starlet/dataconv"
+	"github.com/starpkg/base/util"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -130,13 +133,33 @@ func (r *OperationResult) Index(i int) starlark.Value {
 
 // transaction represents a database transaction.
 type transaction struct {
-	tx      *sql.Tx
-	maxRows int
+	tx        *sql.Tx
+	maxRows   int
+	opTimeout time.Duration
+	// cancel releases the transaction-lifetime context created in begin(). It is
+	// separate from the per-statement contexts: cancelling it aborts the whole
+	// transaction, so it is called only once the transaction ends (commit or
+	// rollback), never when an individual statement returns.
+	cancel context.CancelFunc
+}
+
+// finish releases the transaction-lifetime context (idempotent).
+func (tx *transaction) finish() {
+	if tx.cancel != nil {
+		tx.cancel()
+	}
+}
+
+// opContext derives the context bounding a single operation from the calling
+// script thread plus the configured per-operation timeout. The caller must
+// invoke the returned cancel func.
+func (tx *transaction) opContext(thread *starlark.Thread) (context.Context, context.CancelFunc) {
+	return util.OpContext(thread, tx.opTimeout)
 }
 
 // newTransactionInstance creates a new Starlark transaction instance.
-func newTransactionInstance(tx *sql.Tx, maxRows int) *starlarkstruct.Module {
-	txObj := &transaction{tx: tx, maxRows: maxRows}
+func newTransactionInstance(tx *sql.Tx, maxRows int, opTimeout time.Duration, cancel context.CancelFunc) *starlarkstruct.Module {
+	txObj := &transaction{tx: tx, maxRows: maxRows, opTimeout: opTimeout, cancel: cancel}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -168,7 +191,9 @@ func (tx *transaction) execute(thread *starlark.Thread, fn *starlark.Builtin, ar
 	}
 
 	// Execute the query within transaction
-	result, err := tx.tx.Exec(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := tx.opContext(thread)
+	defer cancel()
+	result, err := tx.tx.ExecContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return newErrorResult(fmt.Errorf("failed to execute transaction query: %w", err)), nil
 	}
@@ -200,7 +225,9 @@ func (tx *transaction) query(thread *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Execute the query within transaction
-	rows, err := tx.tx.Query(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := tx.opContext(thread)
+	defer cancel()
+	rows, err := tx.tx.QueryContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return newErrorResult(fmt.Errorf("failed to execute transaction query: %w", err)), nil
 	}
@@ -232,7 +259,9 @@ func (tx *transaction) queryOne(thread *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Execute the query within transaction
-	rows, err := tx.tx.Query(sqlQuery.query, sqlQuery.params...)
+	ctx, cancel := tx.opContext(thread)
+	defer cancel()
+	rows, err := tx.tx.QueryContext(ctx, sqlQuery.query, sqlQuery.params...)
 	if err != nil {
 		return newErrorResult(fmt.Errorf("failed to execute transaction query: %w", err)), nil
 	}
@@ -252,6 +281,7 @@ func (tx *transaction) commit(thread *starlark.Thread, fn *starlark.Builtin, arg
 		return nil, err
 	}
 
+	defer tx.finish()
 	if err := tx.tx.Commit(); err != nil {
 		return newErrorResult(fmt.Errorf("failed to commit transaction: %w", err)), nil
 	}
@@ -267,6 +297,7 @@ func (tx *transaction) rollback(thread *starlark.Thread, fn *starlark.Builtin, a
 		return nil, err
 	}
 
+	defer tx.finish()
 	if err := tx.tx.Rollback(); err != nil {
 		return nil, fmt.Errorf("failed to rollback transaction: %w", err)
 	}
