@@ -202,8 +202,13 @@ func processQueryOneRow(rows *sql.Rows) (starlark.Value, error) {
 		return nil, fmt.Errorf("failed to get column names: %w", err)
 	}
 
-	// Check if we have a row
+	// Check if we have a row. A false Next() can also mean the iteration failed
+	// (cancellation, deadline, driver error), so surface rows.Err() rather than
+	// silently reporting a successful no-row result.
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error during query iteration: %w", err)
+		}
 		return starlark.None, nil
 	}
 

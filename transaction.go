@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/1set/starlet/dataconv"
@@ -160,6 +161,13 @@ func (tx *transaction) opContext(thread *starlark.Thread) (context.Context, cont
 // newTransactionInstance creates a new Starlark transaction instance.
 func newTransactionInstance(tx *sql.Tx, maxRows int, opTimeout time.Duration, cancel context.CancelFunc) *starlarkstruct.Module {
 	txObj := &transaction{tx: tx, maxRows: maxRows, opTimeout: opTimeout, cancel: cancel}
+	// Safety net for a transaction the script begins but never commits/rolls back:
+	// the host Machine may run under an uncancelled context.Background(), so
+	// without this the lifetime context (and the connection it pins on a
+	// single-connection in-memory database) would leak until process exit. When
+	// the abandoned object is collected, cancelling its context makes database/sql
+	// roll the transaction back and return the connection to the pool.
+	runtime.SetFinalizer(txObj, func(t *transaction) { t.finish() })
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{

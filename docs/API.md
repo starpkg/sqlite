@@ -35,7 +35,7 @@ parameter omitted falls back to the corresponding module config option.
 **Parameters:**
 
 - `database` (string): Database path or `:memory:` for in-memory (default: module config)
-- `timeout` (float): Per-operation deadline in seconds — each query/statement is bounded by it and cancels with the script thread (0 = no deadline; default: module config)
+- `timeout` (float): Per-operation deadline in seconds — each query/statement is bounded by it and cancels with the script thread. Omit or pass 0 to use the module default; set the module `timeout` config (or `SQLITE_TIMEOUT`) to 0 to disable the deadline.
 - `busy_timeout` (float): Busy timeout in seconds (default: module config)
 - `foreign_keys` (bool): Enable foreign key constraints (default: module config)
 - `journal_mode` (string): Journal mode (default: module config)

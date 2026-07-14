@@ -2,11 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -2491,6 +2491,9 @@ func TestMemoryDBSingleConnection(t *testing.T) {
 		t.Fatalf("openDatabase: %v", err)
 	}
 	defer db.Close()
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("in-memory pool MaxOpenConnections = %d, want 1 (pinned)", got)
+	}
 	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -2520,22 +2523,28 @@ func TestForeignKeysAcrossConnections(t *testing.T) {
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(4)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var v int
-			if err := db.QueryRow("PRAGMA foreign_keys").Scan(&v); err != nil {
-				t.Errorf("pragma read: %v", err)
-				return
-			}
-			if v != 1 {
-				t.Errorf("foreign_keys=%d on a pooled connection, want 1", v)
-			}
-		}()
+	// Deterministically open (and hold) several DISTINCT physical connections, so
+	// this actually exercises a fresh connection rather than reusing one idle
+	// connection — then confirm foreign_keys is ON on every one of them.
+	const n = 4
+	conns := make([]*sql.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("acquire conn %d: %v", i, err)
+		}
+		defer c.Close()
+		conns = append(conns, c)
 	}
-	wg.Wait()
+	for i, c := range conns {
+		var v int
+		if err := c.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&v); err != nil {
+			t.Fatalf("conn %d pragma read: %v", i, err)
+		}
+		if v != 1 {
+			t.Errorf("foreign_keys=%d on pooled connection %d, want 1", v, i)
+		}
+	}
 }
 
 // TestQueryRespectsThreadCancellation verifies a query is bound to the script
@@ -2562,5 +2571,24 @@ func TestQueryRespectsThreadCancellation(t *testing.T) {
 	_, callErr := starlark.Call(thread, qVal.(*starlark.Builtin), starlark.Tuple{starlark.String("SELECT * FROM t")}, nil)
 	if callErr == nil || !strings.Contains(callErr.Error(), "context canceled") {
 		t.Errorf("query on a cancelled thread: err = %v, want it to mention context canceled", callErr)
+	}
+}
+
+// TestInMemoryDSNClassification locks the file-access-gate classifier: only true
+// in-memory / private-temp forms are in-memory; a bare path (even one containing
+// "?mode=memory" or ":memory:") is a real disk file and must NOT be misclassified
+// (that would let a restricted script reach disk).
+func TestInMemoryDSNClassification(t *testing.T) {
+	inMemory := []string{"", ":memory:", ":memory:?cache=shared", "file:", "file:?cache=shared", "file::memory:", "file::memory:?cache=shared", "file:named?mode=memory"}
+	onDisk := []string{"test.db", "/etc/passwd", "file:/etc/passwd", "file:/etc/passwd?x=:memory:", "file::memory:evil", "foo.db?mode=memory"}
+	for _, s := range inMemory {
+		if !isInMemoryDSN(s) {
+			t.Errorf("isInMemoryDSN(%q) = false, want true", s)
+		}
+	}
+	for _, s := range onDisk {
+		if isInMemoryDSN(s) {
+			t.Errorf("isInMemoryDSN(%q) = true, want false (a disk file must not pass the in-memory gate)", s)
+		}
 	}
 }
