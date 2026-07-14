@@ -2579,8 +2579,16 @@ func TestQueryRespectsThreadCancellation(t *testing.T) {
 // "?mode=memory" or ":memory:") is a real disk file and must NOT be misclassified
 // (that would let a restricted script reach disk).
 func TestInMemoryDSNClassification(t *testing.T) {
-	inMemory := []string{"", ":memory:", ":memory:?cache=shared", "file:", "file:?cache=shared", "file::memory:", "file::memory:?cache=shared", "file:named?mode=memory"}
-	onDisk := []string{"test.db", "/etc/passwd", "file:/etc/passwd", "file:/etc/passwd?x=:memory:", "file::memory:evil", "foo.db?mode=memory"}
+	inMemory := []string{"", ":memory:", "file:", "file:?cache=shared", "file::memory:", "file::memory:?cache=shared"}
+	// Only the path decides disk-vs-memory; a mode=memory query never reclassifies
+	// a disk path (Go/SQLite query parsing disagree — a gate bypass), and a
+	// non-URI ":memory:?…" is a disk filename to SQLite.
+	onDisk := []string{
+		"test.db", "/etc/passwd", "file:/etc/passwd", "file:/etc/passwd?x=:memory:",
+		"file::memory:evil", "foo.db?mode=memory", ":memory:?cache=shared",
+		"file:named?mode=memory", "file:/etc/passwd?mode=memory&mode=rw%00%ZZ",
+		"file:/etc/passwd?mode=memory&mode%00junk=rw",
+	}
 	for _, s := range inMemory {
 		if !isInMemoryDSN(s) {
 			t.Errorf("isInMemoryDSN(%q) = false, want true", s)

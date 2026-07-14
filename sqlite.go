@@ -274,9 +274,8 @@ func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, ar
 // strict: a loose substring match on ":memory:" / "mode=memory" would let a file
 // DSN such as "file:/etc/passwd?x=:memory:" slip past the file-access restriction.
 func isInMemoryDSN(s string) bool {
-	// Empty = private temporary database; ":memory:" (optionally with query
-	// parameters) = the in-memory database.
-	if s == "" || s == ":memory:" || strings.HasPrefix(s, ":memory:?") {
+	// Empty = private temporary database; ":memory:" = the in-memory database.
+	if s == "" || s == ":memory:" {
 		return true
 	}
 	// A DSN without the "file:" scheme is a literal filename to SQLite — even one
@@ -289,19 +288,17 @@ func isInMemoryDSN(s string) bool {
 	if err != nil {
 		return false
 	}
-	// The path is in Opaque for "file::memory:" / "file:name" and in Path for
-	// "file:/abs". An empty path is a private temporary database.
+	// Only the PATH decides disk-vs-memory. We deliberately do NOT trust a
+	// mode=memory query parameter to reclassify a disk path: Go's url parsing and
+	// SQLite's DSN parsing disagree on malformed/edge queries (%00 truncation,
+	// duplicate keys), and any such disagreement on a disk path would be a
+	// file-access-gate bypass. An empty path is a private temporary database;
+	// a ":memory:" path (file::memory:[?…]) is the in-memory database.
 	path := u.Opaque
 	if path == "" {
 		path = u.Path
 	}
-	if path == "" || path == ":memory:" {
-		return true
-	}
-	// mode=memory (last value wins, per SQLite) makes even a named database
-	// in-memory; a real query parameter only, never a substring.
-	modes := u.Query()["mode"]
-	return len(modes) > 0 && modes[len(modes)-1] == "memory"
+	return path == "" || path == ":memory:"
 }
 
 // openDatabase creates a new local SQLite database connection. The connection
