@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/1set/starlet"
 	"github.com/starpkg/base"
@@ -2598,5 +2599,37 @@ func TestInMemoryDSNClassification(t *testing.T) {
 		if isInMemoryDSN(s) {
 			t.Errorf("isInMemoryDSN(%q) = true, want false (a disk file must not pass the in-memory gate)", s)
 		}
+	}
+}
+
+// TestNestedBeginHonorsTimeout verifies that acquiring a connection for a second
+// transaction on a single-connection in-memory database is bounded by the
+// per-operation timeout — it errors instead of blocking the host indefinitely
+// when the sole connection is held by an open transaction.
+func TestNestedBeginHonorsTimeout(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	mod := newDatabaseInstance(db, 0, false, 200*time.Millisecond) // short op deadline
+	beginV, err := mod.Attr("begin")
+	if err != nil {
+		t.Fatalf("begin attr: %v", err)
+	}
+	begin := beginV.(*starlark.Builtin)
+	th := &starlark.Thread{} // Background context, like a default starlet Run
+	if _, err := starlark.Call(th, begin, nil, nil); err != nil {
+		t.Fatalf("first begin: %v", err) // holds the sole connection
+	}
+	done := make(chan error, 1)
+	go func() { _, e := starlark.Call(th, begin, nil, nil); done <- e }()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Error("second begin unexpectedly succeeded on a single-connection DB")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("second begin blocked >5s — the per-operation timeout was not honored")
 	}
 }

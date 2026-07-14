@@ -137,6 +137,12 @@ type transaction struct {
 	tx        *sql.Tx
 	maxRows   int
 	opTimeout time.Duration
+	// conn is the dedicated connection the transaction runs on. begin() acquires
+	// it under a deadline (so acquisition can't block the host forever when the
+	// single-connection in-memory pool is busy) and hands it here to be released
+	// on finish; the transaction itself then runs under a cancellation-only
+	// context that a per-statement deadline could not safely bound.
+	conn *sql.Conn
 	// cancel releases the transaction-lifetime context created in begin(). It is
 	// separate from the per-statement contexts: cancelling it aborts the whole
 	// transaction, so it is called only once the transaction ends (commit or
@@ -144,10 +150,16 @@ type transaction struct {
 	cancel context.CancelFunc
 }
 
-// finish releases the transaction-lifetime context (idempotent).
+// finish aborts the transaction context and returns its connection to the pool
+// (idempotent). Cancelling first makes database/sql roll back any still-open
+// transaction before the connection is released.
 func (tx *transaction) finish() {
 	if tx.cancel != nil {
 		tx.cancel()
+	}
+	if tx.conn != nil {
+		tx.conn.Close()
+		tx.conn = nil
 	}
 }
 
@@ -159,8 +171,8 @@ func (tx *transaction) opContext(thread *starlark.Thread) (context.Context, cont
 }
 
 // newTransactionInstance creates a new Starlark transaction instance.
-func newTransactionInstance(tx *sql.Tx, maxRows int, opTimeout time.Duration, cancel context.CancelFunc) *starlarkstruct.Module {
-	txObj := &transaction{tx: tx, maxRows: maxRows, opTimeout: opTimeout, cancel: cancel}
+func newTransactionInstance(tx *sql.Tx, maxRows int, opTimeout time.Duration, conn *sql.Conn, cancel context.CancelFunc) *starlarkstruct.Module {
+	txObj := &transaction{tx: tx, maxRows: maxRows, opTimeout: opTimeout, conn: conn, cancel: cancel}
 	// Safety net for a transaction the script begins but never commits/rolls back:
 	// the host Machine may run under an uncancelled context.Background(), so
 	// without this the lifetime context (and the connection it pins on a

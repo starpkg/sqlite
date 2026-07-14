@@ -317,22 +317,31 @@ func (db *database) begin(thread *starlark.Thread, fn *starlark.Builtin, args st
 		return nil, err
 	}
 
-	// Begin transaction. A transaction spans multiple later calls (execute →
-	// commit), so its context must live until commit/rollback — it is NOT the
-	// per-statement context and must NOT carry the per-operation deadline (which
-	// would abort a legitimately long-running transaction) nor be cancelled when
-	// begin() returns. Cancellation-only (timeout 0) still propagates a cancelled
-	// script thread; the cancel func is handed to the transaction and fired on
-	// commit/rollback.
-	ctx, cancel := util.OpContext(thread, 0)
-	tx, err := db.db.BeginTx(ctx, nil)
+	// Acquire the connection under a DEADLINE (the per-operation timeout), so that
+	// acquiring it can't block the host indefinitely when the pool is busy — e.g.
+	// a single-connection in-memory database whose sole connection is held by
+	// another open transaction.
+	acquireCtx, acquireCancel := db.opContext(thread)
+	defer acquireCancel()
+	conn, err := db.db.Conn(acquireCtx)
 	if err != nil {
-		cancel()
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	// The transaction spans multiple later calls (execute → commit), so its
+	// context must live until commit/rollback and must NOT carry the per-operation
+	// deadline (which would abort a legitimately long transaction). Cancellation-
+	// only still propagates a cancelled script thread; the cancel func and the
+	// dedicated connection are handed to the transaction and released on finish.
+	lifeCtx, lifeCancel := util.OpContext(thread, 0)
+	tx, err := conn.BeginTx(lifeCtx, nil)
+	if err != nil {
+		lifeCancel()
+		conn.Close()
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	// Create transaction object
-	return newTransactionInstance(tx, db.maxRows, db.opTimeout, cancel), nil
+	return newTransactionInstance(tx, db.maxRows, db.opTimeout, conn, lifeCancel), nil
 }
 
 // attach attaches another database with an alias.
