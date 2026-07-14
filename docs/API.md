@@ -35,7 +35,7 @@ parameter omitted falls back to the corresponding module config option.
 **Parameters:**
 
 - `database` (string): Database path or `:memory:` for in-memory (default: module config)
-- `timeout` (float): Connection timeout in seconds (default: module config)
+- `timeout` (float): Per-operation deadline in seconds — each query/statement is bounded by it and cancels with the script thread. Omit or pass 0 to use the module default; set the module `timeout` config (or `SQLITE_TIMEOUT`) to 0 to disable the deadline.
 - `busy_timeout` (float): Busy timeout in seconds (default: module config)
 - `foreign_keys` (bool): Enable foreign key constraints (default: module config)
 - `journal_mode` (string): Journal mode (default: module config)
@@ -998,7 +998,7 @@ accessor — never a getter — but this module has none.)
 | Option | Getter | Setter | Type | Env var | Default | Description |
 |--------|--------|--------|------|---------|---------|-------------|
 | `database` | `get_database` | `set_database` | string | `SQLITE_DATABASE` | `:memory:` | Path to the SQLite database (use `:memory:` for in-memory) |
-| `timeout` | `get_timeout` | `set_timeout` | float | `SQLITE_TIMEOUT` | `30.0` | Connection timeout in seconds |
+| `timeout` | `get_timeout` | `set_timeout` | float | `SQLITE_TIMEOUT` | `30.0` | Per-operation deadline in seconds (per-query; cancels with the script thread; 0 = none) |
 | `busy_timeout` | `get_busy_timeout` | `set_busy_timeout` | float | `SQLITE_BUSY_TIMEOUT` | `5.0` | Busy timeout in seconds |
 | `foreign_keys` | `get_foreign_keys` | `set_foreign_keys` | bool | `SQLITE_FOREIGN_KEYS` | `true` | Enable foreign key constraints |
 | `journal_mode` | `get_journal_mode` | `set_journal_mode` | string | `SQLITE_JOURNAL_MODE` | `DELETE` | Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF) |

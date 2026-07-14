@@ -1,12 +1,15 @@
 package sqlite
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/1set/starlet"
 	"github.com/starpkg/base"
@@ -2476,4 +2479,157 @@ main()
 	requireSQLiteScript(t, script, func() starlet.ModuleLoader {
 		return NewModule().LoadModule()
 	})
+}
+
+// --- STAR-75 / STAR-76: connection-pool semantics + cancellable operations ---
+
+// TestMemoryDBSingleConnection verifies an in-memory database keeps its schema
+// and data: because the pool is pinned to one connection, a later query never
+// lands on a second (empty) physical connection ("no such table" / lost rows).
+func TestMemoryDBSingleConnection(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("in-memory pool MaxOpenConnections = %d, want 1 (pinned)", got)
+	}
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO t VALUES (1)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	for i := 0; i < 25; i++ {
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM t").Scan(&n); err != nil {
+			t.Fatalf("query %d: %v (memory data lost across connections)", i, err)
+		}
+		if n != 1 {
+			t.Fatalf("query %d: count=%d, want 1", i, n)
+		}
+	}
+}
+
+// TestForeignKeysAcrossConnections verifies foreign_keys is enforced on EVERY
+// pooled connection (set via the DSN, not once with db.Exec) — otherwise a later
+// connection falls back to SQLite's default OFF and constraint violations
+// silently succeed.
+func TestForeignKeysAcrossConnections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fk.db")
+	db, err := openDatabase(path, 5, true, "WAL", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(4)
+	// Deterministically open (and hold) several DISTINCT physical connections, so
+	// this actually exercises a fresh connection rather than reusing one idle
+	// connection — then confirm foreign_keys is ON on every one of them.
+	const n = 4
+	conns := make([]*sql.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		c, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatalf("acquire conn %d: %v", i, err)
+		}
+		defer c.Close()
+		conns = append(conns, c)
+	}
+	for i, c := range conns {
+		var v int
+		if err := c.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&v); err != nil {
+			t.Fatalf("conn %d pragma read: %v", i, err)
+		}
+		if v != 1 {
+			t.Errorf("foreign_keys=%d on pooled connection %d, want 1", v, i)
+		}
+	}
+}
+
+// TestQueryRespectsThreadCancellation verifies a query is bound to the script
+// thread's context, so a cancelled thread aborts it (the fix for uncancellable
+// remote/slow queries that could hang the host).
+func TestQueryRespectsThreadCancellation(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	mod := newDatabaseInstance(db, 0, false, 0)
+	qVal, err := mod.Attr("query")
+	if err != nil || qVal == nil {
+		t.Fatalf("query attr: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+	thread := &starlark.Thread{}
+	thread.SetLocal("context", ctx)
+	_, callErr := starlark.Call(thread, qVal.(*starlark.Builtin), starlark.Tuple{starlark.String("SELECT * FROM t")}, nil)
+	if callErr == nil || !strings.Contains(callErr.Error(), "context canceled") {
+		t.Errorf("query on a cancelled thread: err = %v, want it to mention context canceled", callErr)
+	}
+}
+
+// TestInMemoryDSNClassification locks the file-access-gate classifier: only true
+// in-memory / private-temp forms are in-memory; a bare path (even one containing
+// "?mode=memory" or ":memory:") is a real disk file and must NOT be misclassified
+// (that would let a restricted script reach disk).
+func TestInMemoryDSNClassification(t *testing.T) {
+	inMemory := []string{"", ":memory:", "file:", "file:?cache=shared", "file::memory:", "file::memory:?cache=shared"}
+	// Only the path decides disk-vs-memory; a mode=memory query never reclassifies
+	// a disk path (Go/SQLite query parsing disagree — a gate bypass), and a
+	// non-URI ":memory:?…" is a disk filename to SQLite.
+	onDisk := []string{
+		"test.db", "/etc/passwd", "file:/etc/passwd", "file:/etc/passwd?x=:memory:",
+		"file::memory:evil", "foo.db?mode=memory", ":memory:?cache=shared",
+		"file:named?mode=memory", "file:/etc/passwd?mode=memory&mode=rw%00%ZZ",
+		"file:/etc/passwd?mode=memory&mode%00junk=rw",
+	}
+	for _, s := range inMemory {
+		if !isInMemoryDSN(s) {
+			t.Errorf("isInMemoryDSN(%q) = false, want true", s)
+		}
+	}
+	for _, s := range onDisk {
+		if isInMemoryDSN(s) {
+			t.Errorf("isInMemoryDSN(%q) = true, want false (a disk file must not pass the in-memory gate)", s)
+		}
+	}
+}
+
+// TestNestedBeginHonorsTimeout verifies that acquiring a connection for a second
+// transaction on a single-connection in-memory database is bounded by the
+// per-operation timeout — it errors instead of blocking the host indefinitely
+// when the sole connection is held by an open transaction.
+func TestNestedBeginHonorsTimeout(t *testing.T) {
+	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	if err != nil {
+		t.Fatalf("openDatabase: %v", err)
+	}
+	defer db.Close()
+	mod := newDatabaseInstance(db, 0, false, 200*time.Millisecond) // short op deadline
+	beginV, err := mod.Attr("begin")
+	if err != nil {
+		t.Fatalf("begin attr: %v", err)
+	}
+	begin := beginV.(*starlark.Builtin)
+	th := &starlark.Thread{} // Background context, like a default starlet Run
+	if _, err := starlark.Call(th, begin, nil, nil); err != nil {
+		t.Fatalf("first begin: %v", err) // holds the sole connection
+	}
+	done := make(chan error, 1)
+	go func() { _, e := starlark.Call(th, begin, nil, nil); done <- e }()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Error("second begin unexpectedly succeeded on a single-connection DB")
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("second begin blocked >5s — the per-operation timeout was not honored")
+	}
 }

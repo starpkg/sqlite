@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/1set/starlet"
 	"github.com/1set/starlet/dataconv/types"
 	"github.com/starpkg/base"
+	"github.com/starpkg/base/util"
 	"github.com/tursodatabase/libsql-client-go/libsql"
 	"go.starlark.net/starlark"
 	_ "modernc.org/sqlite"
@@ -28,7 +30,7 @@ const (
 
 // Default configuration values
 const (
-	defaultTimeout     = 30.0       // Default connection timeout in seconds.
+	defaultTimeout     = 30.0       // Default per-operation deadline in seconds (0 = no deadline).
 	defaultBusyTimeout = 5.0        // Default busy timeout in seconds. SQLite will wait for this duration if the database is locked.
 	defaultDatabase    = ":memory:" // Default database path. Use ":memory:" for an in-memory database, or provide a file path.
 	defaultForeignKeys = true       // Default for foreign key constraints. Set to true to enable, false to disable. Enabling enforces referential integrity.
@@ -70,7 +72,7 @@ type Module struct {
 func NewModule() *Module {
 	return newModuleWithOptions(
 		genConfigOption(configKeyDatabase, "Path to SQLite database (use :memory: for in-memory)", defaultDatabase),
-		genConfigOption(configKeyTimeout, "Connection timeout in seconds", defaultTimeout),
+		genConfigOption(configKeyTimeout, "Per-operation deadline in seconds (0 = no deadline)", defaultTimeout),
 		genConfigOption(configKeyBusyTimeout, "Busy timeout in seconds", defaultBusyTimeout),
 		genConfigOption(configKeyForeignKeys, "Enable foreign key constraints", defaultForeignKeys),
 		genConfigOption(configKeyJournalMode, "Journal mode (WAL, DELETE, TRUNCATE, PERSIST, MEMORY, OFF)", defaultJournalMode),
@@ -90,10 +92,7 @@ func NewModuleWithFileAccess(allowed bool) *Module {
 // genConfigOption creates a configuration option with common settings.
 // It sets up the name, description, default value, and environment variable.
 func genConfigOption[T any](name, description string, defaultValue T) *base.ConfigOption[T] {
-	return base.NewConfigOption(defaultValue).
-		WithName(name).
-		WithDescription(description).
-		WithEnvVar(strings.ToUpper(ModuleName + "_" + name))
+	return base.NewNamedConfigOption(ModuleName, name, description, defaultValue)
 }
 
 // newModuleWithOptions creates a Module with the given configuration options.
@@ -201,19 +200,38 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
 
 	// Create a new database connection
-	db, err := openDatabase(database, timeout.GoFloat(), busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
+	db, err := openDatabase(database, busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Create and return the database object
-	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+	// Create and return the database object. `timeout` now bounds each operation
+	// (via a per-query context), replacing its former misuse as the connection's
+	// max lifetime.
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess, secondsToDuration(timeout.GoFloat())), nil
+}
+
+// secondsToDuration converts a fractional-seconds timeout into a time.Duration.
+// A non-positive value means "no per-operation deadline".
+func secondsToDuration(sec float64) time.Duration {
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec * float64(time.Second))
 }
 
 // connectRemote opens a connection to a remote libSQL server — a self-hosted
 // sqld or Turso Cloud — over the pure-Go libSQL client (no cgo). The returned
 // object exposes the same query/exec/table API as a local connection, because
 // the libSQL remote client is a standard database/sql driver.
+//
+// Cancellation caveat: queries (Ping/Query/Exec) over the HTTP(S)/Turso client
+// honour the operation context, but the pinned libSQL driver on Go 1.20 does not
+// thread a context into COMMIT/ROLLBACK, nor into a ws://wss:// connection dial
+// (a fixed background dial). So a commit/rollback, or a reconnect over ws/wss,
+// can still outlast the per-operation deadline / thread cancellation until the
+// driver's own timeout. The documented HTTP(S)/Turso paths are the unaffected
+// common case.
 func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var dbURL, authToken string
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -236,13 +254,19 @@ func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, ar
 	}
 
 	db := sql.OpenDB(connector)
-	if err := db.Ping(); err != nil {
+	opTimeout := secondsToDuration(m.ext.GetFloat(configKeyTimeout, defaultTimeout))
+	// A remote connect/query is a network round-trip: bound the Ping (and, below,
+	// every query) with a context so an unreachable or slow host cannot block the
+	// host goroutine indefinitely and so a cancelled script thread aborts it.
+	pingCtx, cancel := util.OpContext(thread, opTimeout)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to connect to remote database: %w", err)
 	}
 
 	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
-	return newDatabaseInstance(db, maxRows, m.restrictFileAccess), nil
+	return newDatabaseInstance(db, maxRows, m.restrictFileAccess, opTimeout), nil
 }
 
 // isInMemoryDSN reports whether a SQLite DSN refers to an in-memory (or private
@@ -250,58 +274,144 @@ func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, ar
 // strict: a loose substring match on ":memory:" / "mode=memory" would let a file
 // DSN such as "file:/etc/passwd?x=:memory:" slip past the file-access restriction.
 func isInMemoryDSN(s string) bool {
-	switch {
-	case s == "", s == ":memory:":
-		// Empty = private temporary database; ":memory:" = the in-memory database.
-		return true
-	case strings.HasPrefix(s, "file::memory:"):
-		// Named in-memory database, e.g. "file::memory:?cache=shared".
+	// Empty = private temporary database; ":memory:" = the in-memory database.
+	if s == "" || s == ":memory:" {
 		return true
 	}
-	// Honour "mode=memory" only as a real query parameter, not as a substring.
-	if i := strings.IndexByte(s, '?'); i >= 0 {
-		if q, err := url.ParseQuery(s[i+1:]); err == nil && q.Get("mode") == "memory" {
-			return true
-		}
+	// A DSN without the "file:" scheme is a literal filename to SQLite — even one
+	// containing "?mode=memory" or ":memory:" is a real on-disk file, so it must
+	// NOT be treated as in-memory (that was a file-access bypass).
+	if !strings.HasPrefix(s, "file:") {
+		return false
 	}
-	return false
+	u, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	// Only the PATH decides disk-vs-memory. We deliberately do NOT trust a
+	// mode=memory query parameter to reclassify a disk path: Go's url parsing and
+	// SQLite's DSN parsing disagree on malformed/edge queries (%00 truncation,
+	// duplicate keys), and any such disagreement on a disk path would be a
+	// file-access-gate bypass. An empty path is a private temporary database;
+	// a ":memory:" path (file::memory:[?…]) is the in-memory database.
+	path := u.Opaque
+	if path == "" {
+		path = u.Path
+	}
+	return path == "" || path == ":memory:"
 }
 
-// openDatabase creates a new SQLite database connection with the given options.
-func openDatabase(connStr string, timeout, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
-	// Open database connection
-	db, err := sql.Open("sqlite", connStr)
+// openDatabase creates a new local SQLite database connection. The connection
+// PRAGMAs are set through the DSN (modernc's _pragma= parameter) so they apply
+// to EVERY physical connection the pool opens; applying them once with db.Exec
+// only configures a single borrowed connection, leaving every later connection
+// on SQLite's defaults (notably foreign_keys OFF, so constraint-violating writes
+// silently succeed). An in-memory or private-temporary database is additionally
+// pinned to one never-recycled connection, because its schema and data live only
+// inside that connection — a second (empty) connection or a recycled one would
+// otherwise make earlier data vanish ("no such table").
+func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
+	if !pragmaIdentifier(journalMode) {
+		return nil, fmt.Errorf("invalid journal_mode %q", journalMode)
+	}
+	if !pragmaIdentifier(synchronous) {
+		return nil, fmt.Errorf("invalid synchronous %q", synchronous)
+	}
+	settings := pragmaSettings(busyTimeout, foreignKeys, journalMode, synchronous, cacheSize)
+
+	memory := isInMemoryDSN(connStr)
+	dsn := connStr
+	if !memory {
+		// A file database is served by a POOL of connections; carry the PRAGMAs in
+		// the DSN so every connection the pool opens is configured identically.
+		dsn = appendPragmas(connStr, settings)
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-
-	// Verify database connection with Ping
-	// This will catch database file accessibility issues early
-	if err := db.Ping(); err != nil {
+	if memory {
+		err = configureMemoryConnection(db, settings)
+	} else {
+		err = db.Ping()
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	return db, nil
+}
 
-	// Configure connection options
-	pragmas := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", int(busyTimeout*1000)),
-		fmt.Sprintf("PRAGMA journal_mode = %s", journalMode),
-		fmt.Sprintf("PRAGMA synchronous = %s", synchronous),
-		fmt.Sprintf("PRAGMA cache_size = %d", cacheSize),
-		fmt.Sprintf("PRAGMA foreign_keys = %d", boolToInt(foreignKeys)),
-	}
-
-	// Execute all pragmas
-	for _, pragma := range pragmas {
-		_, err = db.Exec(pragma)
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("failed to execute %s: %w", pragma, err)
+// configureMemoryConnection pins an in-memory / private-temporary database to a
+// single never-recycled connection (so its schema and data don't vanish when a
+// second connection opens or the first is retired) and applies the PRAGMAs
+// directly to that one connection — which also verifies it opens, sidestepping
+// the DSN quirk that an empty connStr would be misparsed.
+func configureMemoryConnection(db *sql.DB, settings [][2]string) error {
+	db.SetMaxOpenConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	for _, stmt := range pragmaStatements(settings) {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to apply %s: %w", stmt, err)
 		}
 	}
+	return nil
+}
 
-	// Set timeout
-	db.SetConnMaxLifetime(time.Duration(timeout * float64(time.Second)))
+// pragmaIdentifier reports whether v is a bare alphanumeric PRAGMA keyword/value,
+// so it is safe to place into a PRAGMA statement or the DSN _pragma= expression
+// without risking injection (a value like "WAL); DROP …" is rejected).
+func pragmaIdentifier(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if !isASCIIAlphanumeric(r) {
+			return false
+		}
+	}
+	return true
+}
 
-	return db, nil
+// isASCIIAlphanumeric reports whether r is an ASCII letter or digit.
+func isASCIIAlphanumeric(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+}
+
+// pragmaSettings returns the ordered (name, value) connection PRAGMAs. journal_mode
+// and synchronous must already be validated by pragmaIdentifier; the rest are
+// integer-formatted.
+func pragmaSettings(busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) [][2]string {
+	return [][2]string{
+		{"busy_timeout", strconv.Itoa(int(busyTimeout * 1000))},
+		{"foreign_keys", strconv.Itoa(boolToInt(foreignKeys))},
+		{"journal_mode", journalMode},
+		{"synchronous", synchronous},
+		{"cache_size", strconv.Itoa(cacheSize)},
+	}
+}
+
+// appendPragmas builds the DSN carrying the PRAGMAs as modernc _pragma=
+// parameters so every pooled (file) connection is configured identically.
+func appendPragmas(connStr string, settings [][2]string) string {
+	parts := make([]string, len(settings))
+	for i, s := range settings {
+		parts[i] = "_pragma=" + s[0] + "(" + s[1] + ")"
+	}
+	sep := "?"
+	if strings.Contains(connStr, "?") {
+		sep = "&"
+	}
+	return connStr + sep + strings.Join(parts, "&")
+}
+
+// pragmaStatements returns the PRAGMA statements for the single-connection
+// (in-memory) path.
+func pragmaStatements(settings [][2]string) []string {
+	stmts := make([]string, len(settings))
+	for i, s := range settings {
+		stmts[i] = "PRAGMA " + s[0] + " = " + s[1]
+	}
+	return stmts
 }

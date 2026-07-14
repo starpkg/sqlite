@@ -137,7 +137,12 @@ The module's options (`database`, `timeout`, `busy_timeout`, `foreign_keys`,
 environment variables (`SQLITE_*`) or per-option `get_<key>` / `set_<key>`
 accessor builtins, and serve as defaults for `connect` / `connect_remote`. Two
 opt-in host levers (`max_rows` and `NewModuleWithFileAccess`) bound what an
-untrusted script can reach; both default to off. See the
+untrusted script can reach; both default to off. `timeout` bounds each database
+operation (a per-query deadline, and a cancellation point tied to the script
+thread) — this is what stops an unreachable remote from hanging the host. The
+connection PRAGMAs (`foreign_keys`, `journal_mode`, …) are applied to every
+pooled connection, and an in-memory database is served from a single connection
+so its schema and data persist across queries. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
 option table, defaults, accessors, and host-hardening details.
 

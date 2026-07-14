@@ -1,10 +1,13 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/1set/starlet/dataconv"
+	"github.com/starpkg/base/util"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
@@ -16,13 +19,21 @@ import (
 // preparedStmt represents a prepared statement struct with methods
 // directly attached, providing cleaner and more idiomatic Go code.
 type preparedStmt struct {
-	stmt    *sql.Stmt
-	maxRows int
+	stmt      *sql.Stmt
+	maxRows   int
+	opTimeout time.Duration
+}
+
+// opContext derives the context bounding a single operation from the calling
+// script thread plus the configured per-operation timeout. The caller must
+// invoke the returned cancel func.
+func (ps *preparedStmt) opContext(thread *starlark.Thread) (context.Context, context.CancelFunc) {
+	return util.OpContext(thread, ps.opTimeout)
 }
 
 // newPreparedStatementInstance creates a new Starlark prepared statement instance.
-func newPreparedStatementInstance(stmt *sql.Stmt, maxRows int) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt, maxRows: maxRows}
+func newPreparedStatementInstance(stmt *sql.Stmt, maxRows int, opTimeout time.Duration) *starlarkstruct.Module {
+	ps := &preparedStmt{stmt: stmt, maxRows: maxRows, opTimeout: opTimeout}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -34,8 +45,8 @@ func newPreparedStatementInstance(stmt *sql.Stmt, maxRows int) *starlarkstruct.M
 }
 
 // newPreparedQueryInstance creates a new Starlark prepared query instance.
-func newPreparedQueryInstance(stmt *sql.Stmt, maxRows int) *starlarkstruct.Module {
-	ps := &preparedStmt{stmt: stmt, maxRows: maxRows}
+func newPreparedQueryInstance(stmt *sql.Stmt, maxRows int, opTimeout time.Duration) *starlarkstruct.Module {
+	ps := &preparedStmt{stmt: stmt, maxRows: maxRows, opTimeout: opTimeout}
 
 	// Create dictionary of methods
 	dict := starlark.StringDict{
@@ -67,7 +78,9 @@ func (ps *preparedStmt) execute(thread *starlark.Thread, fn *starlark.Builtin, a
 	}
 
 	// Execute the statement
-	result, err := ps.stmt.Exec(goParams...)
+	ctx, cancel := ps.opContext(thread)
+	defer cancel()
+	result, err := ps.stmt.ExecContext(ctx, goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute statement: %w", err)
 	}
@@ -110,7 +123,9 @@ func (ps *preparedStmt) query(thread *starlark.Thread, fn *starlark.Builtin, arg
 	}
 
 	// Execute the query
-	rows, err := ps.stmt.Query(goParams...)
+	ctx, cancel := ps.opContext(thread)
+	defer cancel()
+	rows, err := ps.stmt.QueryContext(ctx, goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -135,7 +150,9 @@ func (ps *preparedStmt) queryOne(thread *starlark.Thread, fn *starlark.Builtin, 
 	}
 
 	// Execute the query
-	rows, err := ps.stmt.Query(goParams...)
+	ctx, cancel := ps.opContext(thread)
+	defer cancel()
+	rows, err := ps.stmt.QueryContext(ctx, goParams...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}

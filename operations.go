@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -60,8 +61,25 @@ func isTableAlreadyExistsError(err error) bool {
 	return false
 }
 
+// execAffecting runs an INSERT/UPDATE/DELETE-style statement under the thread's
+// operation context and returns the number of affected rows as a Starlark int.
+// failMsg labels an execution failure.
+func (db *database) execAffecting(thread *starlark.Thread, failMsg, query string, params ...interface{}) (starlark.Value, error) {
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	result, err := db.db.ExecContext(ctx, query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", failMsg, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	return starlark.MakeInt64(rowsAffected), nil
+}
+
 // createTable creates a new table with the specified columns, optional constraints, and indexes.
-func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) createTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columns *starlark.Dict
 	var constraintsVal starlark.Value
@@ -77,24 +95,37 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 		return nil, err
 	}
 
+	// Build CREATE TABLE statement
+	query, err := buildCreateTableStatement(table, columns, constraintsVal)
+	if err != nil {
+		return nil, err
+	}
+
 	// Begin transaction for atomicity
-	tx, err := db.db.Begin()
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	// Build CREATE TABLE statement
+	// Execute the CREATE TABLE statement and its indexes within the transaction
+	return execCreateTable(ctx, tx, query, table, indexesVal, existOk)
+}
+
+// buildCreateTableStatement assembles the CREATE TABLE SQL from the column
+// definitions and optional table-level constraints.
+func buildCreateTableStatement(table string, columns *starlark.Dict, constraintsVal starlark.Value) (string, error) {
+	// Build column definitions
 	columnDefs, err := buildColumnDefinitions(columns)
 	if err != nil {
-		tx.Rollback()
-		return nil, err
+		return "", err
 	}
 
 	// Process table-level constraints
 	tableConstraints, err := processTableConstraints(constraintsVal)
 	if err != nil {
-		tx.Rollback()
-		return nil, err
+		return "", err
 	}
 
 	// Combine column definitions and table constraints
@@ -102,12 +133,15 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	allDefinitions = append(allDefinitions, columnDefs...)
 	allDefinitions = append(allDefinitions, tableConstraints...)
 
-	// Create SQL statement
-	query := fmt.Sprintf("CREATE TABLE %s (%s)", quoteName(table), strings.Join(allDefinitions, ", "))
+	return fmt.Sprintf("CREATE TABLE %s (%s)", quoteName(table), strings.Join(allDefinitions, ", ")), nil
+}
 
+// execCreateTable runs the CREATE TABLE statement and its indexes inside tx,
+// committing on success and rolling back on any failure. When existOk is set,
+// a "table already exists" error is treated as a no-op success.
+func execCreateTable(ctx context.Context, tx *sql.Tx, query, table string, indexesVal starlark.Value, existOk bool) (starlark.Value, error) {
 	// Execute the CREATE TABLE statement
-	_, err = tx.Exec(query)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, query); err != nil {
 		tx.Rollback()
 		// Handle exist_ok case: ignore "table already exists" errors
 		if existOk && isTableAlreadyExistsError(err) {
@@ -117,8 +151,7 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 	}
 
 	// Process and create indexes
-	err = createTableIndexes(tx, table, indexesVal)
-	if err != nil {
+	if err := createTableIndexes(ctx, tx, table, indexesVal); err != nil {
 		tx.Rollback()
 		return nil, err
 	}
@@ -132,7 +165,7 @@ func (db *database) createTable(_ *starlark.Thread, fn *starlark.Builtin, args s
 }
 
 // dropTable drops a table.
-func (db *database) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) dropTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -144,7 +177,9 @@ func (db *database) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args sta
 	query := fmt.Sprintf("DROP TABLE %s", quoteName(table))
 
 	// Execute the statement
-	_, err := db.db.Exec(query)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	_, err := db.db.ExecContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to drop table: %w", err)
 	}
@@ -153,7 +188,7 @@ func (db *database) dropTable(_ *starlark.Thread, fn *starlark.Builtin, args sta
 }
 
 // truncateTable removes all rows from a table.
-func (db *database) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) truncateTable(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 
 	if err := starlark.UnpackArgs(fn.Name(), args, kwargs,
@@ -165,22 +200,11 @@ func (db *database) truncateTable(_ *starlark.Thread, fn *starlark.Builtin, args
 	query := fmt.Sprintf("DELETE FROM %s", quoteName(table))
 
 	// Execute the statement
-	result, err := db.db.Exec(query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to truncate table: %w", err)
-	}
-
-	// Get affected rows
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return starlark.MakeInt64(rowsAffected), nil
+	return db.execAffecting(thread, "failed to truncate table", query)
 }
 
 // insert inserts a record into a table.
-func (db *database) insert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) insert(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 
@@ -220,7 +244,9 @@ func (db *database) insert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 		strings.Join(placeholders, ", "))
 
 	// Execute the statement
-	result, err := db.db.Exec(query, params...)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	result, err := db.db.ExecContext(ctx, query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert record: %w", err)
 	}
@@ -240,7 +266,7 @@ func (db *database) insert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 }
 
 // insertMany inserts multiple records into a table.
-func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) insertMany(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var valuesList *starlark.List
 
@@ -255,44 +281,23 @@ func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args st
 		return starlark.MakeInt(0), nil
 	}
 
-	// Get first row to determine columns
-	firstRowVal := valuesList.Index(0)
-
-	firstRow, ok := firstRowVal.(*starlark.Dict)
-	if !ok {
-		return nil, fmt.Errorf("values must be a list of dictionaries")
-	}
-
-	// Extract column names from first row
-	var originalColumnNames []string // Store original (unquoted) column names
-	var quotedColumnNames []string   // Store quoted column names for SQL
-	for _, tuple := range firstRow.Items() {
-		colName, ok := tuple.Index(0).(starlark.String)
-		if !ok {
-			return nil, fmt.Errorf("column name must be a string")
-		}
-		sColName := string(colName)
-		originalColumnNames = append(originalColumnNames, sColName)
-		quotedColumnNames = append(quotedColumnNames, quoteName(sColName))
+	// Extract column names from the first row
+	originalColumnNames, quotedColumnNames, err := extractInsertColumns(valuesList.Index(0))
+	if err != nil {
+		return nil, err
 	}
 
 	// Begin transaction
-	tx, err := db.db.Begin()
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	tx, err := db.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	// Build SQL statement
-	placeholders := strings.Repeat("?, ", len(quotedColumnNames)) // Use count of columns
-	placeholders = placeholders[:len(placeholders)-2]             // Remove trailing ", "
-
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
-		quoteName(table),
-		strings.Join(quotedColumnNames, ", "), // Use quoted names for SQL
-		placeholders)
-
-	// Prepare statement
-	stmt, err := tx.Prepare(query)
+	// Build and prepare the INSERT statement
+	query := buildInsertManyQuery(table, quotedColumnNames)
+	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("failed to prepare statement: %w", err)
@@ -300,48 +305,9 @@ func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args st
 	defer stmt.Close()
 
 	// Insert each row
-	var totalRows int64
-	for i := 0; i < valuesList.Len(); i++ {
-		rowVal := valuesList.Index(i)
-
-		row, ok := rowVal.(*starlark.Dict)
-		if !ok {
-			tx.Rollback()
-			return nil, fmt.Errorf("values must be a list of dictionaries")
-		}
-
-		// Extract values in the same order as originalColumnNames
-		var params []interface{}
-		for _, originalCol := range originalColumnNames { // Iterate using original names for lookup
-			val, found, err := row.Get(starlark.String(originalCol)) // Use original name for Get
-			if err != nil {
-				tx.Rollback()
-				return nil, err
-			}
-			if !found {
-				tx.Rollback()
-				return nil, fmt.Errorf("column %s missing in row %d", originalCol, i)
-			}
-			sqlVal, err := starlarkToSQLiteValue(val)
-			if err != nil {
-				tx.Rollback()
-				return nil, err
-			}
-			params = append(params, sqlVal)
-		}
-
-		// Execute statement
-		result, err := stmt.Exec(params...)
-		if err != nil {
-			tx.Rollback()
-			return nil, fmt.Errorf("failed to insert row %d: %w", i, err)
-		}
-
-		// Count affected rows
-		rowsAffected, err := result.RowsAffected()
-		if err == nil {
-			totalRows += rowsAffected
-		}
+	totalRows, err := execInsertManyRows(ctx, tx, stmt, valuesList, originalColumnNames)
+	if err != nil {
+		return nil, err
 	}
 
 	// Commit transaction
@@ -352,8 +318,101 @@ func (db *database) insertMany(_ *starlark.Thread, fn *starlark.Builtin, args st
 	return starlark.MakeInt64(totalRows), nil
 }
 
+// extractInsertColumns reads the column names from the first row dictionary,
+// returning both the original (unquoted) names for value lookup and the quoted
+// names for SQL.
+func extractInsertColumns(firstRowVal starlark.Value) ([]string, []string, error) {
+	firstRow, ok := firstRowVal.(*starlark.Dict)
+	if !ok {
+		return nil, nil, fmt.Errorf("values must be a list of dictionaries")
+	}
+
+	var originalColumnNames []string // Store original (unquoted) column names
+	var quotedColumnNames []string   // Store quoted column names for SQL
+	for _, tuple := range firstRow.Items() {
+		colName, ok := tuple.Index(0).(starlark.String)
+		if !ok {
+			return nil, nil, fmt.Errorf("column name must be a string")
+		}
+		sColName := string(colName)
+		originalColumnNames = append(originalColumnNames, sColName)
+		quotedColumnNames = append(quotedColumnNames, quoteName(sColName))
+	}
+
+	return originalColumnNames, quotedColumnNames, nil
+}
+
+// buildInsertManyQuery builds the parameterized INSERT statement for insertMany.
+func buildInsertManyQuery(table string, quotedColumnNames []string) string {
+	placeholders := strings.Repeat("?, ", len(quotedColumnNames)) // Use count of columns
+	placeholders = placeholders[:len(placeholders)-2]             // Remove trailing ", "
+
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		quoteName(table),
+		strings.Join(quotedColumnNames, ", "), // Use quoted names for SQL
+		placeholders)
+}
+
+// execInsertManyRows executes the prepared statement for every row, rolling back
+// tx and returning an error on the first failure, and returns the total number
+// of affected rows on success.
+func execInsertManyRows(ctx context.Context, tx *sql.Tx, stmt *sql.Stmt, valuesList *starlark.List, originalColumnNames []string) (int64, error) {
+	var totalRows int64
+	for i := 0; i < valuesList.Len(); i++ {
+		row, ok := valuesList.Index(i).(*starlark.Dict)
+		if !ok {
+			tx.Rollback()
+			return 0, fmt.Errorf("values must be a list of dictionaries")
+		}
+
+		// Extract values in the same order as originalColumnNames
+		params, err := buildInsertRowParams(row, originalColumnNames, i)
+		if err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+
+		// Execute statement
+		result, err := stmt.ExecContext(ctx, params...)
+		if err != nil {
+			tx.Rollback()
+			return 0, fmt.Errorf("failed to insert row %d: %w", i, err)
+		}
+
+		// Count affected rows
+		rowsAffected, err := result.RowsAffected()
+		if err == nil {
+			totalRows += rowsAffected
+		}
+	}
+
+	return totalRows, nil
+}
+
+// buildInsertRowParams looks up each column's value in row (in column order) and
+// converts it to a SQLite value. rowIndex labels a missing-column error.
+func buildInsertRowParams(row *starlark.Dict, originalColumnNames []string, rowIndex int) ([]interface{}, error) {
+	var params []interface{}
+	for _, originalCol := range originalColumnNames { // Iterate using original names for lookup
+		val, found, err := row.Get(starlark.String(originalCol)) // Use original name for Get
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			return nil, fmt.Errorf("column %s missing in row %d", originalCol, rowIndex)
+		}
+		sqlVal, err := starlarkToSQLiteValue(val)
+		if err != nil {
+			return nil, err
+		}
+		params = append(params, sqlVal)
+	}
+
+	return params, nil
+}
+
 // update updates records in a table.
-func (db *database) update(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) update(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 	var whereVal starlark.Value
@@ -405,22 +464,40 @@ func (db *database) update(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Execute the statement
-	result, err := db.db.Exec(query, params...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to update records: %w", err)
+	return db.execAffecting(thread, "failed to update records", query, params...)
+}
+
+// buildUpsertClauses walks the values dictionary and returns the quoted column
+// names, the placeholder list, the bound parameters, and the ON CONFLICT DO
+// UPDATE SET clauses (each mapping a column to its excluded value).
+func buildUpsertClauses(values *starlark.Dict) (columns, placeholders []string, params []interface{}, updateClauses []string, err error) {
+	for _, tuple := range values.Items() {
+		colName, ok := tuple.Index(0).(starlark.String)
+		if !ok {
+			return nil, nil, nil, nil, fmt.Errorf("column name must be a string")
+		}
+
+		// Add column name
+		columns = append(columns, quoteName(string(colName)))
+
+		// Add placeholder and value
+		placeholders = append(placeholders, "?")
+		val, err := starlarkToSQLiteValue(tuple.Index(1))
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		params = append(params, val)
+
+		// Add update clause
+		updateClauses = append(updateClauses, fmt.Sprintf("%s = excluded.%s",
+			quoteName(string(colName)), quoteName(string(colName))))
 	}
 
-	// Get affected rows
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return starlark.MakeInt64(rowsAffected), nil
+	return columns, placeholders, params, updateClauses, nil
 }
 
 // upsert inserts a record if it doesn't exist, or updates it if it does.
-func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) upsert(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var values *starlark.Dict
 	var keyColumnsVal starlark.Value
@@ -433,31 +510,9 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Extract column names and values
-	var columns []string
-	var placeholders []string
-	var params []interface{}
-	var updateClauses []string
-
-	for _, tuple := range values.Items() {
-		colName, ok := tuple.Index(0).(starlark.String)
-		if !ok {
-			return nil, fmt.Errorf("column name must be a string")
-		}
-
-		// Add column name
-		columns = append(columns, quoteName(string(colName)))
-
-		// Add placeholder and value
-		placeholders = append(placeholders, "?")
-		val, err := starlarkToSQLiteValue(tuple.Index(1))
-		if err != nil {
-			return nil, err
-		}
-		params = append(params, val)
-
-		// Add update clause
-		updateClauses = append(updateClauses, fmt.Sprintf("%s = excluded.%s",
-			quoteName(string(colName)), quoteName(string(colName))))
+	columns, placeholders, params, updateClauses, err := buildUpsertClauses(values)
+	if err != nil {
+		return nil, err
 	}
 
 	// Extract conflict columns using extractColumns
@@ -479,22 +534,11 @@ func (db *database) upsert(_ *starlark.Thread, fn *starlark.Builtin, args starla
 		strings.Join(updateClauses, ", "))
 
 	// Execute the statement
-	result, err := db.db.Exec(query, params...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to upsert record: %w", err)
-	}
-
-	// Get affected rows
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return starlark.MakeInt64(rowsAffected), nil
+	return db.execAffecting(thread, "failed to upsert record", query, params...)
 }
 
 // delete deletes records from a table.
-func (db *database) delete(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) delete(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var whereVal starlark.Value
 
@@ -519,18 +563,7 @@ func (db *database) delete(_ *starlark.Thread, fn *starlark.Builtin, args starla
 	}
 
 	// Execute the statement
-	result, err := db.db.Exec(query, params...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to delete records: %w", err)
-	}
-
-	// Get affected rows
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return starlark.MakeInt64(rowsAffected), nil
+	return db.execAffecting(thread, "failed to delete records", query, params...)
 }
 
 // extractColumns extracts column names from a Starlark value,
@@ -634,7 +667,7 @@ func parseWhereClause(whereVal starlark.Value) (string, []interface{}, error) {
 }
 
 // selectRecords selects records from a table.
-func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) selectRecords(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var columnsVal starlark.Value
 	var whereVal starlark.Value
@@ -706,7 +739,9 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 	}
 
 	// Execute the query
-	rows, err := db.db.Query(query, params...)
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	rows, err := db.db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select records: %w", err)
 	}
@@ -716,7 +751,7 @@ func (db *database) selectRecords(_ *starlark.Thread, fn *starlark.Builtin, args
 }
 
 // count counts records in a table.
-func (db *database) count(_ *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func (db *database) count(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var table string
 	var whereVal starlark.Value
 
@@ -742,7 +777,9 @@ func (db *database) count(_ *starlark.Thread, fn *starlark.Builtin, args starlar
 
 	// Execute the query
 	var count int64
-	if err := db.db.QueryRow(query, params...).Scan(&count); err != nil {
+	ctx, cancel := db.opContext(thread)
+	defer cancel()
+	if err := db.db.QueryRowContext(ctx, query, params...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("failed to count records: %w", err)
 	}
 
@@ -873,7 +910,7 @@ func processTableConstraints(constraintsVal starlark.Value) ([]string, error) {
 }
 
 // createTableIndexes creates indexes for a table from a Starlark value.
-func createTableIndexes(tx *sql.Tx, tableName string, indexesVal starlark.Value) error {
+func createTableIndexes(ctx context.Context, tx *sql.Tx, tableName string, indexesVal starlark.Value) error {
 	if indexesVal == nil || indexesVal == starlark.None {
 		return nil
 	}
@@ -925,7 +962,7 @@ func createTableIndexes(tx *sql.Tx, tableName string, indexesVal starlark.Value)
 		}
 
 		// Execute the index creation
-		_, err = tx.Exec(indexSQL)
+		_, err = tx.ExecContext(ctx, indexSQL)
 		if err != nil {
 			return fmt.Errorf("failed to create index: %w", err)
 		}
