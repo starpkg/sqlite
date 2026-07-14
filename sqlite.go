@@ -326,7 +326,11 @@ func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journal
 		// the DSN so every connection the pool opens is configured identically.
 		dsn = appendPragmas(connStr, settings)
 	}
-	db, err := sql.Open("sqlite", dsn)
+	// Open through the funcMutex-serialized driver so a lazy connection Open
+	// (which reads modernc's global UDF map) can't race a concurrent
+	// register_function call (see ensureLocalDriver).
+	ensureLocalDriver()
+	db, err := sql.Open(localDriverName, dsn)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"sync"
@@ -28,6 +29,59 @@ var (
 	registeredFuncs = make(map[string]*registeredFunction)
 	funcMutex       sync.RWMutex
 )
+
+// localDriverName is the database/sql driver name connect() opens through: a
+// funcMutex-serialized wrapper over modernc's "sqlite" driver (see below).
+const localDriverName = "sqlite-udf-serialized"
+
+var registerLocalDriverOnce sync.Once
+
+// ensureLocalDriver registers the funcMutex-serialized wrapper over modernc's
+// "sqlite" driver, exactly once.
+//
+// modernc's Driver.Open reads its process-global user-defined-function map
+// (d.udfs) with NO lock, while RegisterScalarFunction writes it.
+// register_function serializes writes under funcMutex, but a connection's Open —
+// called lazily by database/sql, possibly from another host machine running in
+// parallel — reads d.udfs unlocked, so a concurrent register_function + connect
+// is a data race (potentially a fatal concurrent-map access). Opening through
+// this wrapper makes every Open hold funcMutex for reading, serialized against
+// register_function's write.
+//
+// Scope: this serializes THIS module's register_function against THIS module's
+// own connections (connect opens through localDriverName). It does not, and
+// cannot, protect a different component in the same process that opens the raw
+// "sqlite" driver directly, nor concurrent registration of modernc collations /
+// connection hooks — this module registers neither, and those globals are
+// modernc's own unlocked state. A modernc connection hook that reenters
+// register_function while a wrapped Open holds the read lock would deadlock;
+// this module registers no connection hooks, so that path is unreachable here.
+func ensureLocalDriver() {
+	registerLocalDriverOnce.Do(func() {
+		// A lazily-opened handle purely to obtain the registered driver instance
+		// (Open is not called here, so the empty DSN is never used).
+		db, err := sql.Open("sqlite", "")
+		if err != nil {
+			return // "sqlite" is always registered by the modernc import
+		}
+		inner := db.Driver()
+		_ = db.Close()
+		sql.Register(localDriverName, &udfSerializedDriver{inner: inner})
+	})
+}
+
+// udfSerializedDriver wraps modernc's driver so a connection Open (which reads
+// the global UDF map) is serialized against register_function (which writes it).
+type udfSerializedDriver struct{ inner driver.Driver }
+
+// Open holds funcMutex for reading while the wrapped driver reads its global UDF
+// map. register_function holds it for writing, so the two never run concurrently;
+// concurrent Opens still proceed in parallel (a read lock).
+func (d *udfSerializedDriver) Open(name string) (driver.Conn, error) {
+	funcMutex.RLock()
+	defer funcMutex.RUnlock()
+	return d.inner.Open(name)
+}
 
 // ============================================================================
 // Function Registration
