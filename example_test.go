@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2632,4 +2633,69 @@ func TestNestedBeginHonorsTimeout(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("second begin blocked >5s — the per-operation timeout was not honored")
 	}
+}
+
+// raceTestRun uniquifies registered-function names across test invocations (the
+// registry is process-global, so -count=2 would otherwise hit "already
+// registered").
+var raceTestRun int64
+
+// TestConcurrentRegisterAndConnectNoRace exercises PKG-29: register_function
+// writes modernc's process-global UDF map while a connection Open reads it
+// (unlocked, inside the driver). Opening through the funcMutex-serialized driver
+// (ensureLocalDriver) makes the two mutually exclusive. Hammering both
+// concurrently under -race must report no data race.
+func TestConcurrentRegisterAndConnectNoRace(t *testing.T) {
+	ensureLocalDriver()
+	run := atomic.AddInt64(&raceTestRun, 1)
+
+	noop := starlark.NewBuiltin("noop", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+		return starlark.None, nil
+	})
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Openers: repeatedly open a memory DB and Ping (forces a real Driver.Open,
+	// which reads the global UDF map) until the registrars finish.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				db, err := sql.Open(localDriverName, ":memory:")
+				if err != nil {
+					t.Errorf("open: %v", err)
+					return
+				}
+				_ = db.Ping()
+				_ = db.Close()
+			}
+		}()
+	}
+
+	// Registrars: register uniquely-named scalar functions (writes the map).
+	var regWG sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		regWG.Add(1)
+		go func(base int) {
+			defer regWG.Done()
+			for j := 0; j < 40; j++ {
+				name := fmt.Sprintf("udf_race_%d_%d_%d", run, base, j)
+				if err := doRegisterFunction(name, noop, 0, false); err != nil {
+					t.Errorf("register %s: %v", name, err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	regWG.Wait()
+	close(stop)
+	wg.Wait()
 }
