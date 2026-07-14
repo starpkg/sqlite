@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/1set/starlet v0.2.3
-	github.com/starpkg/base v0.1.2
+	github.com/starpkg/base v0.1.3
 	github.com/tursodatabase/libsql-client-go v0.0.0-20260528064733-9d5d30a29a60
 	go.starlark.net v0.0.0-20260324133313-ffb3f39dd27a
 	modernc.org/sqlite v1.31.1
