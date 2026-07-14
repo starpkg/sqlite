@@ -3,15 +3,15 @@ module github.com/starpkg/sqlite
 go 1.20
 
 require (
-	github.com/1set/starlet v0.2.2
-	github.com/starpkg/base v0.1.1
+	github.com/1set/starlet v0.2.3
+	github.com/starpkg/base v0.1.2
 	github.com/tursodatabase/libsql-client-go v0.0.0-20260528064733-9d5d30a29a60
 	go.starlark.net v0.0.0-20260324133313-ffb3f39dd27a
 	modernc.org/sqlite v1.31.1
 )
 
 require (
-	github.com/1set/starlight v0.2.0 // indirect
+	github.com/1set/starlight v0.2.1 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/coder/websocket v1.8.12 // indirect
