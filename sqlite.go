@@ -323,9 +323,7 @@ func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journal
 	dsn := connStr
 	if !memory {
 		// A file database is served by a POOL of connections; carry the PRAGMAs in
-		// the DSN (modernc _pragma=) so every connection the pool opens is
-		// configured identically. Applying them once with db.Exec would leave
-		// later connections on SQLite's defaults (notably foreign_keys OFF).
+		// the DSN so every connection the pool opens is configured identically.
 		dsn = appendPragmas(connStr, settings)
 	}
 	db, err := sql.Open("sqlite", dsn)
@@ -333,28 +331,32 @@ func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journal
 		return nil, err
 	}
 	if memory {
-		// An in-memory / private-temporary database lives inside a single
-		// connection: pin the pool to one never-recycled connection so its schema
-		// and data don't vanish when a second (empty) connection opens or the first
-		// is retired. With exactly one connection, db.Exec configures it directly
-		// (and sidesteps the DSN quirk that an empty connStr would be misparsed).
-		db.SetMaxOpenConns(1)
-		db.SetConnMaxLifetime(0)
-		db.SetConnMaxIdleTime(0)
+		err = configureMemoryConnection(db, settings)
+	} else {
+		err = db.Ping()
 	}
-	if err := db.Ping(); err != nil {
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	if memory {
-		for _, stmt := range pragmaStatements(settings) {
-			if _, err := db.Exec(stmt); err != nil {
-				db.Close()
-				return nil, fmt.Errorf("failed to apply %s: %w", stmt, err)
-			}
+	return db, nil
+}
+
+// configureMemoryConnection pins an in-memory / private-temporary database to a
+// single never-recycled connection (so its schema and data don't vanish when a
+// second connection opens or the first is retired) and applies the PRAGMAs
+// directly to that one connection — which also verifies it opens, sidestepping
+// the DSN quirk that an empty connStr would be misparsed.
+func configureMemoryConnection(db *sql.DB, settings [][2]string) error {
+	db.SetMaxOpenConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+	for _, stmt := range pragmaStatements(settings) {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to apply %s: %w", stmt, err)
 		}
 	}
-	return db, nil
+	return nil
 }
 
 // pragmaIdentifier reports whether v is a bare alphanumeric PRAGMA keyword/value,
@@ -365,11 +367,16 @@ func pragmaIdentifier(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+		if !isASCIIAlphanumeric(r) {
 			return false
 		}
 	}
 	return true
+}
+
+// isASCIIAlphanumeric reports whether r is an ASCII letter or digit.
+func isASCIIAlphanumeric(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
 }
 
 // pragmaSettings returns the ordered (name, value) connection PRAGMAs. journal_mode
