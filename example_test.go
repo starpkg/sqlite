@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,9 @@ import (
 	"github.com/starpkg/base"
 	"go.starlark.net/starlark"
 )
+
+// Sections: script examples; row/file limits; UDF conversion and concurrency;
+// host function policy and local/remote connection boundaries.
 
 // funcNameCounter makes custom-function names unique within a process. The
 // register_function registry is process-global, so reusing a name across runs
@@ -2489,7 +2494,7 @@ main()
 // and data: because the pool is pinned to one connection, a later query never
 // lands on a second (empty) physical connection ("no such table" / lost rows).
 func TestMemoryDBSingleConnection(t *testing.T) {
-	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	db, err := NewModule().openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
 	if err != nil {
 		t.Fatalf("openDatabase: %v", err)
 	}
@@ -2520,7 +2525,7 @@ func TestMemoryDBSingleConnection(t *testing.T) {
 // silently succeed.
 func TestForeignKeysAcrossConnections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fk.db")
-	db, err := openDatabase(path, 5, true, "WAL", "NORMAL", -2000)
+	db, err := NewModule().openDatabase(path, 5, true, "WAL", "NORMAL", -2000)
 	if err != nil {
 		t.Fatalf("openDatabase: %v", err)
 	}
@@ -2554,7 +2559,7 @@ func TestForeignKeysAcrossConnections(t *testing.T) {
 // thread's context, so a cancelled thread aborts it (the fix for uncancellable
 // remote/slow queries that could hang the host).
 func TestQueryRespectsThreadCancellation(t *testing.T) {
-	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	db, err := NewModule().openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
 	if err != nil {
 		t.Fatalf("openDatabase: %v", err)
 	}
@@ -2609,7 +2614,7 @@ func TestInMemoryDSNClassification(t *testing.T) {
 // per-operation timeout — it errors instead of blocking the host indefinitely
 // when the sole connection is held by an open transaction.
 func TestNestedBeginHonorsTimeout(t *testing.T) {
-	db, err := openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
+	db, err := NewModule().openDatabase(":memory:", 5, true, "MEMORY", "NORMAL", -2000)
 	if err != nil {
 		t.Fatalf("openDatabase: %v", err)
 	}
@@ -2699,4 +2704,374 @@ func TestConcurrentRegisterAndConnectNoRace(t *testing.T) {
 	regWG.Wait()
 	close(stop)
 	wg.Wait()
+}
+
+// Host policy: a libSQL file URL must obey the same local database restrictions.
+func TestConnectRemoteFileRestriction(t *testing.T) {
+	path := filepath.ToSlash(filepath.Join(t.TempDir(), "restricted.db"))
+	script := fmt.Sprintf(`
+load("sqlite", "connect_remote")
+db = connect_remote(%q)
+db.close()
+`, "file:"+path)
+	requireSQLiteScriptErrorContains(t, script, func() starlet.ModuleLoader {
+		return NewModuleWithFileAccess(false).LoadModule()
+	}, "file database access is restricted")
+}
+
+func policyModule(t *testing.T, m *Module) starlark.HasAttrs {
+	t.Helper()
+	values, err := m.LoadModule()()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return values[ModuleName].(starlark.HasAttrs)
+}
+
+func policyCall(t *testing.T, object starlark.HasAttrs, name string, args ...starlark.Value) (starlark.Value, error) {
+	t.Helper()
+	fn, err := object.Attr(name)
+	if err != nil || fn == nil {
+		t.Fatalf("missing %s: %v", name, err)
+	}
+	return starlark.Call(&starlark.Thread{Name: t.Name()}, fn, starlark.Tuple(args), nil)
+}
+
+func policyMustCall(t *testing.T, object starlark.HasAttrs, name string, args ...starlark.Value) starlark.Value {
+	t.Helper()
+	value, err := policyCall(t, object, name, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return value
+}
+
+func policyDB(t *testing.T, m *Module, entry, dsn string) starlark.HasAttrs {
+	t.Helper()
+	db := policyMustCall(t, policyModule(t, m), entry, starlark.String(dsn)).(starlark.HasAttrs)
+	t.Cleanup(func() { policyMustCall(t, db, "close") })
+	return db
+}
+
+func policyFunction(t *testing.T, m *Module) string {
+	t.Helper()
+	name := uniqueFuncName("policy_udf")
+	fn := starlark.NewBuiltin(name, func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+		return starlark.MakeInt(42), nil
+	})
+	policyMustCall(t, policyModule(t, m), "register_function", starlark.String(name), fn, starlark.MakeInt(0))
+	return name
+}
+
+func TestHostPolicyRegistration(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			policy := HostPolicy{DisableCustomFunctions: disabled}
+			m := NewModuleWithHostPolicy(policy)
+			policy.DisableCustomFunctions = !disabled // The constructor must copy the policy.
+			name := uniqueFuncName("registration_policy")
+			fn := starlark.NewBuiltin(name, func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
+				return starlark.MakeInt(42), nil
+			})
+			_, err := policyCall(t, policyModule(t, m), "register_function", starlark.String(name), fn)
+			if disabled {
+				if err == nil || !strings.Contains(err.Error(), "custom functions are disabled") {
+					t.Fatalf("registration must be denied: %v", err)
+				}
+				funcMutex.RLock()
+				_, exists := registeredFuncs[name]
+				funcMutex.RUnlock()
+				if exists {
+					t.Fatal("denied registration changed the global registry")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestHostPolicyExports(t *testing.T) {
+	const common = "connect connect_remote get_busy_timeout get_cache_size get_database get_foreign_keys get_journal_mode get_max_rows get_synchronous get_timeout register_function set_busy_timeout set_cache_size set_foreign_keys set_journal_mode set_max_rows set_synchronous set_timeout"
+	for _, restricted := range []bool{false, true} {
+		for _, disabled := range []bool{false, true} {
+			m := NewModuleWithHostPolicy(HostPolicy{RestrictFileAccess: restricted, DisableCustomFunctions: disabled})
+			want := common
+			if !restricted {
+				want = strings.Replace(want, "set_cache_size ", "set_cache_size set_database ", 1)
+			}
+			if got := strings.Join(policyModule(t, m).AttrNames(), " "); got != want {
+				t.Errorf("policy file=%v functions=%v exports = %s, want %s", restricted, disabled, got, want)
+			}
+		}
+	}
+}
+
+func TestHostPolicyGlobalFunctions(t *testing.T) {
+	for _, entry := range []string{"connect", "connect_remote"} {
+		for _, dsn := range []string{"file::memory:", "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "functions.db"))} {
+			t.Run(entry+dsn, func(t *testing.T) {
+				before := policyFunction(t, NewModule())
+				m := NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true})
+				db := policyDB(t, m, entry, dsn)
+				after := policyFunction(t, NewModule())
+				for _, connection := range []starlark.HasAttrs{db, policyDB(t, m, entry, dsn), policyDB(t, NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true}), entry, dsn)} {
+					for _, name := range []string{before, after} {
+						_, err := policyCall(t, connection, "query", starlark.String("SELECT "+name+"()"))
+						if err == nil || !strings.Contains(err.Error(), "no such function") {
+							t.Fatalf("global function %s remains visible: %v", name, err)
+						}
+					}
+				}
+				legacy := policyDB(t, NewModule(), entry, dsn)
+				got := policyMustCall(t, legacy, "query_one", starlark.String("SELECT "+before+"() AS n, "+after+"() AS m"))
+				if got.String() != `{"n": 42, "m": 42}` {
+					t.Fatalf("legacy functions changed: %s", got)
+				}
+			})
+		}
+	}
+}
+
+func TestHostPolicySQLPaths(t *testing.T) {
+	name := policyFunction(t, NewModule())
+	for _, method := range []string{"query", "query_one", "execute", "batch", "prepare", "prepare_query"} {
+		t.Run(method, func(t *testing.T) {
+			db := policyDB(t, NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true}), "connect", ":memory:")
+			var query starlark.Value = starlark.String("SELECT " + name + "()")
+			if method == "batch" {
+				query = starlark.NewList([]starlark.Value{query})
+			}
+			value, err := policyCall(t, db, method, query)
+			// database/sql may defer preparation until execution.
+			if err == nil && (method == "prepare" || method == "prepare_query") {
+				stmt := value.(starlark.HasAttrs)
+				defer policyMustCall(t, stmt, "close")
+				op := "query"
+				if method == "prepare" {
+					op = "execute"
+				}
+				_, err = policyCall(t, stmt, op)
+			}
+			if err == nil || !strings.Contains(err.Error(), "no such function") {
+				t.Fatalf("%s allowed a custom function: %v", method, err)
+			}
+		})
+	}
+}
+
+func TestHostPolicyTransactionPaths(t *testing.T) {
+	name := policyFunction(t, NewModule())
+	for _, method := range []string{"query", "query_one", "execute"} {
+		t.Run(method, func(t *testing.T) {
+			db := policyDB(t, NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true}), "connect", ":memory:")
+			tx := policyMustCall(t, db, "begin").(starlark.HasAttrs)
+			defer policyMustCall(t, tx, "rollback")
+			result := policyMustCall(t, tx, method, starlark.String("SELECT "+name+"()")).(*OperationResult)
+			if result.err == nil || !strings.Contains(result.err.Error(), "no such function") {
+				t.Fatalf("transaction %s allowed custom function: %s", method, result)
+			}
+		})
+	}
+}
+
+func TestHostPolicyDatabaseFrozen(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "allowed.db")
+	denied := filepath.Join(t.TempDir(), "denied.db")
+	t.Setenv("SQLITE_DATABASE", allowed)
+	m := NewModuleWithFileAccess(false)
+	t.Setenv("SQLITE_DATABASE", denied)
+	mod := policyModule(t, m)
+	if got := policyMustCall(t, mod, "get_database"); got != starlark.String(allowed) {
+		t.Fatalf("host database changed through environment: %s", got)
+	}
+	if setter, _ := mod.Attr("set_database"); setter != nil {
+		t.Fatal("restricted module exposes a database allowlist setter")
+	}
+	for _, entry := range []string{"connect", "connect_remote"} {
+		_, err := policyCall(t, mod, entry, starlark.String("file:"+filepath.ToSlash(denied)))
+		if err == nil || !strings.Contains(err.Error(), "file database access is restricted") {
+			t.Fatalf("%s bypassed the fixed database: %v", entry, err)
+		}
+	}
+}
+
+func TestHostPolicyRemoteHTTP(t *testing.T) {
+	var calls int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"results":[{"type":"ok","response":{"type":"execute","result":{"cols":[{"name":"n","decltype":"INTEGER"}],"rows":[[{"type":"integer","value":"42"}]],"affected_row_count":0}}}]}`)
+	}))
+	defer server.Close()
+	db := policyDB(t, NewModuleWithHostPolicy(HostPolicy{RestrictFileAccess: true, DisableCustomFunctions: true}), "connect_remote", server.URL)
+	beforeQuery := atomic.LoadInt64(&calls)
+	if got := policyMustCall(t, db, "query_one", starlark.String("SELECT 42 AS n")); got.String() != `{"n": 42}` {
+		t.Fatalf("remote result: %s", got)
+	}
+	if atomic.LoadInt64(&calls) <= beforeQuery {
+		t.Fatal("remote query did not reach the local HTTP fixture")
+	}
+}
+
+func requirePolicyAttrs(t *testing.T, object starlark.HasAttrs, want string) {
+	t.Helper()
+	if got := strings.Join(object.AttrNames(), " "); got != want {
+		t.Fatalf("public methods = %s, want %s", got, want)
+	}
+}
+
+func TestHostPolicyNormalSQL(t *testing.T) {
+	for _, restricted := range []bool{false, true} {
+		for _, disabled := range []bool{false, true} {
+			m := NewModuleWithHostPolicy(HostPolicy{RestrictFileAccess: restricted, DisableCustomFunctions: disabled})
+			db := policyDB(t, m, "connect", ":memory:")
+			requirePolicyAttrs(t, db, "attach batch begin close count create_table delete detach drop_table execute indices insert insert_many prepare prepare_query query query_one select table_exists table_info tables truncate_table update upsert")
+			policyMustCall(t, db, "execute", starlark.String("CREATE TABLE t (n INTEGER)"))
+			stmt := policyMustCall(t, db, "prepare", starlark.String("INSERT INTO t VALUES (abs(?))")).(starlark.HasAttrs)
+			requirePolicyAttrs(t, stmt, "close execute")
+			policyMustCall(t, stmt, "execute", starlark.Tuple{starlark.MakeInt(-42)})
+			policyMustCall(t, stmt, "close")
+			query := policyMustCall(t, db, "prepare_query", starlark.String("SELECT n FROM t")).(starlark.HasAttrs)
+			requirePolicyAttrs(t, query, "close query query_one")
+			for _, method := range []string{"query", "query_one"} {
+				if got := policyMustCall(t, query, method).String(); !strings.Contains(got, `"n": 42`) {
+					t.Fatalf("ordinary query changed: %s", got)
+				}
+			}
+			policyMustCall(t, query, "close")
+			tx := policyMustCall(t, db, "begin").(starlark.HasAttrs)
+			requirePolicyAttrs(t, tx, "commit execute query query_one rollback")
+			if result := policyMustCall(t, tx, "execute", starlark.String("UPDATE t SET n = 43")).(*OperationResult); result.err != nil {
+				t.Fatal(result.err)
+			}
+			policyMustCall(t, tx, "commit")
+			if got := policyMustCall(t, db, "query_one", starlark.String("SELECT n FROM t")).String(); got != `{"n": 43}` {
+				t.Fatalf("ordinary transaction changed: %s", got)
+			}
+		}
+	}
+}
+
+func TestHostPolicyPooledConnections(t *testing.T) {
+	before := policyFunction(t, NewModule())
+	m := NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true})
+	db, err := m.openDatabase(filepath.Join(t.TempDir(), "pool.db"), 5, true, "WAL", "NORMAL", -2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxIdleConns(0)
+	first, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	after := policyFunction(t, NewModule())
+	second, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	for _, conn := range []*sql.Conn{first, second} {
+		for _, name := range []string{before, after} {
+			if _, err := conn.ExecContext(context.Background(), "SELECT "+name+"()"); err == nil || !strings.Contains(err.Error(), "no such function") {
+				t.Fatalf("pooled connection sees %s: %v", name, err)
+			}
+		}
+		var foreignKeys int
+		if err := conn.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil || foreignKeys != 1 {
+			t.Fatalf("pooled connection lost PRAGMAs: %d, %v", foreignKeys, err)
+		}
+		_ = conn.Close()
+	}
+	if _, err := db.Exec("SELECT " + before + "()"); err == nil || !strings.Contains(err.Error(), "no such function") {
+		t.Fatalf("recycled pool connection sees a global function: %v", err)
+	}
+}
+
+func TestHostPolicyStoredFunctionCalls(t *testing.T) {
+	name := policyFunction(t, NewModule())
+	dsn := filepath.Join(t.TempDir(), "stored.db")
+	legacy := policyDB(t, NewModule(), "connect", dsn)
+	policyMustCall(t, legacy, "execute", starlark.String("CREATE TABLE t(n INTEGER)"))
+	policyMustCall(t, legacy, "execute", starlark.String("CREATE VIEW v AS SELECT "+name+"() AS n"))
+	policyMustCall(t, legacy, "execute", starlark.String("CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT "+name+"(); END"))
+	db := policyDB(t, NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true}), "connect", dsn)
+	for _, query := range []string{"SELECT * FROM v", "INSERT INTO t VALUES (1)"} {
+		if _, err := policyCall(t, db, "execute", starlark.String(query)); err == nil || !strings.Contains(err.Error(), "no such function") {
+			t.Fatalf("stored SQL called a global function: %s, %v", query, err)
+		}
+	}
+}
+
+func TestHostPolicyConnectErrors(t *testing.T) {
+	for _, address := range []string{"", "%", "ftp://invalid.example/database"} {
+		m := NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: true})
+		if _, err := policyCall(t, policyModule(t, m), "connect_remote", starlark.String(address)); err == nil {
+			t.Errorf("invalid remote address %q accepted", address)
+		}
+	}
+}
+
+func TestHostPolicyConcurrentConnections(t *testing.T) {
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(disabled bool) {
+			defer wg.Done()
+			mod := policyModule(t, NewModuleWithHostPolicy(HostPolicy{DisableCustomFunctions: disabled}))
+			for j := 0; j < 20; j++ {
+				db := policyMustCall(t, mod, "connect_remote", starlark.String("file::memory:")).(starlark.HasAttrs)
+				policyMustCall(t, db, "query", starlark.String("SELECT abs(-42)"))
+				policyMustCall(t, db, "close")
+			}
+		}(i%2 == 0)
+	}
+	for i := 0; i < 40; i++ {
+		policyFunction(t, NewModule())
+	}
+	wg.Wait()
+}
+
+func TestHostPolicyDatabaseInitiallyUnset(t *testing.T) {
+	t.Setenv("SQLITE_DATABASE", "")
+	if err := os.Unsetenv("SQLITE_DATABASE"); err != nil {
+		t.Fatal(err)
+	}
+	m := NewModuleWithHostPolicy(HostPolicy{RestrictFileAccess: true})
+	t.Setenv("SQLITE_DATABASE", filepath.Join(t.TempDir(), "late.db"))
+	if got := policyMustCall(t, policyModule(t, m), "get_database"); got != starlark.String(":memory:") {
+		t.Fatalf("late environment widened the default database: %s", got)
+	}
+	db := policyDB(t, m, "connect_remote", "file::memory:")
+	policyMustCall(t, db, "execute", starlark.String("CREATE TABLE t(n INTEGER)"))
+}
+
+// BenchmarkLocalConnect can also be copied unchanged to the pre-policy revision.
+func BenchmarkLocalConnect(b *testing.B) {
+	values, err := NewModule().LoadModule()()
+	if err != nil {
+		b.Fatal(err)
+	}
+	connect, err := values[ModuleName].(starlark.HasAttrs).Attr("connect")
+	if err != nil {
+		b.Fatal(err)
+	}
+	thread := &starlark.Thread{Name: "benchmark"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		value, err := starlark.Call(thread, connect, starlark.Tuple{starlark.String(":memory:")}, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		closeFn, err := value.(starlark.HasAttrs).Attr("close")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := starlark.Call(thread, closeFn, nil, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

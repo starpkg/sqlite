@@ -95,9 +95,10 @@ rows = db.query("SELECT * FROM notes")
 db.close()
 ```
 
-> Note: `connect_remote` is unaffected by the file-access restriction
-> (`NewModuleWithFileAccess`) — it opens a network libSQL endpoint, not a local
-> file. Gate remote access at the network/credential layer.
+> A `file:` URL is a local connection and follows `connect`'s file/function
+> restrictions, module defaults and connection PRAGMAs. `auth_token` is unused
+> for local files. HTTP(S), libSQL and WebSocket endpoints remain remote; gate
+> their access at the network/credential layer.
 
 ### `close()`
 
@@ -997,7 +998,7 @@ accessor — never a getter — but this module has none.)
 
 | Option | Getter | Setter | Type | Env var | Default | Description |
 |--------|--------|--------|------|---------|---------|-------------|
-| `database` | `get_database` | `set_database` | string | `SQLITE_DATABASE` | `:memory:` | Path to the SQLite database (use `:memory:` for in-memory) |
+| `database` | `get_database` | `set_database` (unrestricted modules only) | string | `SQLITE_DATABASE` | `:memory:` | Path to the SQLite database (use `:memory:` for in-memory) |
 | `timeout` | `get_timeout` | `set_timeout` | float | `SQLITE_TIMEOUT` | `30.0` | Per-operation deadline in seconds (per-query; cancels with the script thread; 0 = none) |
 | `busy_timeout` | `get_busy_timeout` | `set_busy_timeout` | float | `SQLITE_BUSY_TIMEOUT` | `5.0` | Busy timeout in seconds |
 | `foreign_keys` | `get_foreign_keys` | `set_foreign_keys` | bool | `SQLITE_FOREIGN_KEYS` | `true` | Enable foreign key constraints |
@@ -1028,23 +1029,43 @@ db = connect("app.db")  # opens with journal_mode=WAL
 
 ### Host hardening (opt-in, host side)
 
-Two **opt-in** levers let the host bound what a script can reach. Both default to
-**off**, so existing scripts keep working unchanged. They are configured by the
-host in Go, not from a script.
+File and function restrictions are **opt-in**, fixed by the host in Go. The
+default constructors continue to allow custom functions and local files.
 
 - **Bound result size — `max_rows`.** A query helper materializes every returned
   row into memory. Set `max_rows` (the config option above, or `SQLITE_MAX_ROWS`)
   to cap the number of rows any single query returns; exceeding the cap raises a
   script error instead of allocating without bound. `0` (the default) means
-  unlimited.
+  unlimited. This configuration is script-settable; it is not an immutable
+  host policy in the default module.
 - **Restrict file access — `NewModuleWithFileAccess`.** By default a script may
   `connect(path)` to any file path (or `attach` any database).
   `NewModuleWithFileAccess(false)` locks this down: scripts may only open
-  **in-memory** databases (`:memory:`, `file::memory:…`, `mode=memory`) or the
-  **one** `database` configured on the module — any other path, and any `attach`
+  **in-memory** databases (`:memory:`, `file::memory:…`) or the
+  **exact** `database` configured on the module — any other path, and any `attach`
   of an on-disk database, is rejected. `NewModule()` equals
-  `NewModuleWithFileAccess(true)`.
+  `NewModuleWithFileAccess(true)`. In restricted mode, `database` is captured
+  at construction, has no `set_database`, and ignores subsequent environment
+  changes. This also applies to `connect_remote` with a `file:` URL. Paths are
+  compared as configured DSNs; this is not a filesystem or symlink sandbox.
 
-> Note: `connect_remote` is unaffected by `NewModuleWithFileAccess` — it opens a
-> network libSQL endpoint, not a local file. Gate remote access at the
-> network/credential layer.
+- **Disable custom functions — `NewModuleWithHostPolicy`.** Set
+  `HostPolicy{DisableCustomFunctions: true}` to reject `register_function` and
+  exclude process-wide functions from every local connection, including pooled
+  replacements and local `file:` URLs passed to `connect_remote`. Functions
+  registered before or after construction by another module are also excluded.
+  The independent driver does not inherit custom collations or connection hooks
+  installed on the default driver. Ordinary SQLite built-ins, queries, writes,
+  transactions, attached databases and prepared statements remain available.
+  Combine with `RestrictFileAccess: true` for the file restriction above.
+  Policy flags have no script getters/setters or environment-variable controls.
+
+  A zero `HostPolicy` preserves `NewModule()` behavior. When custom functions
+  remain enabled, registrations are process-wide and permanent, and script UDF
+  callbacks use a separate thread without the caller's step budget/cancellation.
+  Disabling UDFs avoids that callback path; it does not provide isolated or
+  budgeted execution for UDFs that remain enabled.
+
+> Network libSQL endpoints retain their existing behavior. Server-side functions
+> and network authorization are controlled separately; the local UDF policy does
+> not claim to restrict a remote server. All connections are explicit script calls.
