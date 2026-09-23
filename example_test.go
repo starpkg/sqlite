@@ -1995,7 +1995,8 @@ def main():
 
 main()
 `},
-		{"CustomSQLFunctions", `
+		// Give every function and SQL call the same fresh namespace on each run.
+		{"CustomSQLFunctions", strings.ReplaceAll(`
 load("sqlite", "connect", "register_function")
 
 def main():
@@ -2114,7 +2115,7 @@ def main():
     print("✓ All custom SQL function tests passed")
 
 main()
-`},
+`, "EXAMPLE_", uniqueFuncName("EXAMPLE")+"_")},
 		{"ExistOkFeature", `
 load("sqlite", "connect")
 
