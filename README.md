@@ -152,8 +152,8 @@ Hosts can opt out of custom SQLite functions while retaining ordinary local SQL:
 
 ```go
 module := sqlite.NewModuleWithHostPolicy(sqlite.HostPolicy{
-	RestrictFileAccess:      true,
-	DisableCustomFunctions: true,
+    RestrictFileAccess:      true,
+    DisableCustomFunctions: true,
 })
 ```
 
