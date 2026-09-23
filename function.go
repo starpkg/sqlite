@@ -34,6 +34,10 @@ var (
 // funcMutex-serialized wrapper over modernc's "sqlite" driver (see below).
 const localDriverName = "sqlite-udf-serialized"
 
+// noFunctionsDriverName uses an independent, immutable modernc driver with no
+// registered custom functions, collations, or connection hooks.
+const noFunctionsDriverName = "sqlite-no-custom-functions"
+
 var registerLocalDriverOnce sync.Once
 
 // ensureLocalDriver registers the funcMutex-serialized wrapper over modernc's
@@ -67,6 +71,7 @@ func ensureLocalDriver() {
 		inner := db.Driver()
 		_ = db.Close()
 		sql.Register(localDriverName, &udfSerializedDriver{inner: inner})
+		sql.Register(noFunctionsDriverName, &sqlite.Driver{})
 	})
 }
 
@@ -86,6 +91,14 @@ func (d *udfSerializedDriver) Open(name string) (driver.Conn, error) {
 // ============================================================================
 // Function Registration
 // ============================================================================
+
+// registerFunction enforces the host policy before touching the global registry.
+func (m *Module) registerFunction(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if m.disableCustomFunctions {
+		return nil, fmt.Errorf("custom functions are disabled by the host")
+	}
+	return registerFunction(thread, fn, args, kwargs)
+}
 
 // registerFunction implements the register_function Starlark builtin.
 func registerFunction(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {

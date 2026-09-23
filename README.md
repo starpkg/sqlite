@@ -19,7 +19,7 @@ SQL functions — pure Go, no cgo, all platforms.
 - **Prepared statements** — `prepare` / `prepare_query` for repeated execution.
 - **Custom SQL functions** — `register_function` runs Starlark logic inside SQL queries.
 - **Local & remote** — local files / in-memory via `connect`; remote libSQL (self-hosted `sqld` or Turso Cloud) via `connect_remote`, exposing the same object surface.
-- **Safe by default** — SQL-injection-resistant parameter binding, automatic SQLite ⇄ Starlark type conversion, plus opt-in host hardening (`max_rows`, `NewModuleWithFileAccess`).
+- **Parameter binding and host controls** — SQLite ⇄ Starlark type conversion, configurable row limits, and opt-in file/function restrictions (`NewModuleWithFileAccess`, `NewModuleWithHostPolicy`).
 
 For the complete per-builtin reference — signatures, parameters, returns,
 errors, examples — and the configuration accessors, see
@@ -135,9 +135,11 @@ errors, and examples of every builtin and method above.
 The module's options (`database`, `timeout`, `busy_timeout`, `foreign_keys`,
 `journal_mode`, `synchronous`, `cache_size`, `max_rows`) are configured via
 environment variables (`SQLITE_*`) or per-option `get_<key>` / `set_<key>`
-accessor builtins, and serve as defaults for `connect` / `connect_remote`. Two
-opt-in host levers (`max_rows` and `NewModuleWithFileAccess`) bound what an
-untrusted script can reach; both default to off. `timeout` bounds each database
+accessor builtins, and serve as defaults for `connect` / `connect_remote`.
+`NewModuleWithFileAccess(false)` fixes the allowed `database` at construction
+and omits `set_database`; later environment changes cannot widen that path.
+`max_rows` remains a configurable row limit, with `0` meaning unlimited.
+`timeout` bounds each database
 operation (a per-query deadline, and a cancellation point tied to the script
 thread) — this is what stops an unreachable remote from hanging the host. The
 connection PRAGMAs (`foreign_keys`, `journal_mode`, …) are applied to every
@@ -145,6 +147,29 @@ pooled connection, and an in-memory database is served from a single connection
 so its schema and data persist across queries. See the
 [Configuration section of docs/API.md](docs/API.md#configuration) for the full
 option table, defaults, accessors, and host-hardening details.
+
+Hosts can opt out of custom SQLite functions while retaining ordinary local SQL:
+
+```go
+module := sqlite.NewModuleWithHostPolicy(sqlite.HostPolicy{
+	RestrictFileAccess:      true,
+	DisableCustomFunctions: true,
+})
+```
+
+`DisableCustomFunctions` rejects `register_function` and opens local connections
+on a driver without process-wide custom functions, including functions registered
+by another module. SQLite built-ins, transactions and prepared queries remain
+available. A `file:` URL passed to `connect_remote` follows this same local path,
+file restrictions and connection PRAGMAs. Real network libSQL endpoints retain
+their existing behavior; server functions and network access are controlled by
+the host/server separately. No connection is opened until a script requests one.
+
+`NewModule()` and the zero `HostPolicy` retain custom functions and mutable
+configuration. Enabled script UDFs still use the global registry and a separate
+Starlark thread: they do not inherit the caller's execution budget or cancellation,
+and registrations are not released on connection close. The opt-out is suitable
+for hosts that do not need UDFs; it is not a process or filesystem sandbox.
 
 ## License
 

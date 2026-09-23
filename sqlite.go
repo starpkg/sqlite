@@ -63,15 +63,34 @@ const (
 
 // Module wraps the ConfigurableModule with specific functionality for SQLite operations.
 type Module struct {
-	cfgMod             *base.ConfigurableModule
-	ext                *base.ConfigurableModuleExt
-	restrictFileAccess bool
+	cfgMod                 *base.ConfigurableModule
+	ext                    *base.ConfigurableModuleExt
+	restrictFileAccess     bool
+	disableCustomFunctions bool
 }
 
-// NewModule creates a new module with default configuration.
-func NewModule() *Module {
-	return newModuleWithOptions(
-		genConfigOption(configKeyDatabase, "Path to SQLite database (use :memory: for in-memory)", defaultDatabase),
+// HostPolicy contains opt-in restrictions copied into a module at construction.
+// The zero value preserves NewModule's behavior; scripts cannot change these flags.
+type HostPolicy struct {
+	// RestrictFileAccess applies the same local file gate as NewModuleWithFileAccess(false).
+	RestrictFileAccess bool
+	// DisableCustomFunctions prevents registration and use of process-wide custom
+	// functions on local connections. Built-in SQLite functions remain available.
+	// Remote server functions are controlled by the server, not by this flag.
+	DisableCustomFunctions bool
+}
+
+// NewModuleWithHostPolicy creates a module with fixed, host-owned restrictions.
+// It does not add Starlark setters or environment options for the policy.
+func NewModuleWithHostPolicy(policy HostPolicy) *Module {
+	// A host-only option snapshots its environment at module construction,
+	// before any script can change the process environment or its database.
+	databaseOpt := genConfigOption(configKeyDatabase, "Path to SQLite database (use :memory: for in-memory)", defaultDatabase)
+	if policy.RestrictFileAccess {
+		databaseOpt.SetHostOnly(true)
+	}
+	m := newModuleWithOptions(
+		databaseOpt,
 		genConfigOption(configKeyTimeout, "Per-operation deadline in seconds (0 = no deadline)", defaultTimeout),
 		genConfigOption(configKeyBusyTimeout, "Busy timeout in seconds", defaultBusyTimeout),
 		genConfigOption(configKeyForeignKeys, "Enable foreign key constraints", defaultForeignKeys),
@@ -80,13 +99,19 @@ func NewModule() *Module {
 		genConfigOption(configKeyCacheSize, "Cache size in number of pages", defaultCacheSize),
 		genConfigOption(configKeyMaxRows, "Maximum rows returned by query helpers (0 means unlimited)", defaultMaxRows),
 	)
+	m.restrictFileAccess = policy.RestrictFileAccess
+	m.disableCustomFunctions = policy.DisableCustomFunctions
+	return m
+}
+
+// NewModule creates a new module with default configuration.
+func NewModule() *Module {
+	return NewModuleWithHostPolicy(HostPolicy{})
 }
 
 // NewModuleWithFileAccess creates a new module and optionally restricts file database access.
 func NewModuleWithFileAccess(allowed bool) *Module {
-	m := NewModule()
-	m.restrictFileAccess = !allowed
-	return m
+	return NewModuleWithHostPolicy(HostPolicy{RestrictFileAccess: !allowed})
 }
 
 // genConfigOption creates a configuration option with common settings.
@@ -132,7 +157,7 @@ func (m *Module) LoadModule() starlet.ModuleLoader {
 	additionalFuncs := starlark.StringDict{
 		"connect":           starlark.NewBuiltin(ModuleName+".connect", m.connect),
 		"connect_remote":    starlark.NewBuiltin(ModuleName+".connect_remote", m.connectRemote),
-		"register_function": starlark.NewBuiltin(ModuleName+".register_function", registerFunction),
+		"register_function": starlark.NewBuiltin(ModuleName+".register_function", m.registerFunction),
 	}
 
 	// Return the module
@@ -200,7 +225,7 @@ func (m *Module) connect(thread *starlark.Thread, fn *starlark.Builtin, args sta
 	maxRows := m.ext.GetInt(configKeyMaxRows, defaultMaxRows)
 
 	// Create a new database connection
-	db, err := openDatabase(database, busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
+	db, err := m.openDatabase(database, busyTimeout.GoFloat(), foreignKeysValue, journalMode, synchronous, cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -242,6 +267,15 @@ func (m *Module) connectRemote(thread *starlark.Thread, fn *starlark.Builtin, ar
 	}
 	if dbURL == "" {
 		return nil, fmt.Errorf("connect_remote: url is required")
+	}
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create remote connector: %w", err)
+	}
+	if parsed.Scheme == "file" {
+		// libSQL otherwise opens the raw default SQLite driver, bypassing both
+		// local host policy and register/open serialization.
+		return m.connect(thread, fn, starlark.Tuple{starlark.String(dbURL)}, nil)
 	}
 
 	var opts []libsql.Option
@@ -310,7 +344,7 @@ func isInMemoryDSN(s string) bool {
 // pinned to one never-recycled connection, because its schema and data live only
 // inside that connection — a second (empty) connection or a recycled one would
 // otherwise make earlier data vanish ("no such table").
-func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
+func (m *Module) openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journalMode, synchronous string, cacheSize int) (*sql.DB, error) {
 	if !pragmaIdentifier(journalMode) {
 		return nil, fmt.Errorf("invalid journal_mode %q", journalMode)
 	}
@@ -330,7 +364,11 @@ func openDatabase(connStr string, busyTimeout float64, foreignKeys bool, journal
 	// (which reads modernc's global UDF map) can't race a concurrent
 	// register_function call (see ensureLocalDriver).
 	ensureLocalDriver()
-	db, err := sql.Open(localDriverName, dsn)
+	driverName := localDriverName
+	if m.disableCustomFunctions {
+		driverName = noFunctionsDriverName
+	}
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
