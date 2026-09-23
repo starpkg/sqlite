@@ -9,12 +9,27 @@ on:
 permissions: read-all
 
 jobs:
+  compatibility:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.27.1"
+      - name: Verify the established Go floor and interpreter
+        run: |
+          test "$(go list -m -f '{{.GoVersion}}')" = "1.20"
+          test "$(go list -m -f '{{.Version}}' go.starlark.net)" = "v0.0.0-20260324133313-ffb3f39dd27a"
+
   ci:
+    permissions:
+      contents: read
+      id-token: write
     # Reusable CI lives in 1set/meta — the single source of truth for every
     # Star* module's pipeline. Pinned to a commit SHA for supply-chain safety;
     # bump the pin when meta's workflow changes (Dependabot github-actions can
     # automate this).
-    uses: 1set/meta/.github/workflows/go-ci.yml@5d86667e7264f012655dab2644dfa44e09597445
+    uses: 1set/meta/.github/workflows/go-ci.yml@23f088bcd6dce16c93e0056d7b70b4f4434208e8
     with:
       go-floor: "1.20"
       doc-coverage: true
