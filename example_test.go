@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2626,19 +2627,38 @@ func TestNestedBeginHonorsTimeout(t *testing.T) {
 	}
 	begin := beginV.(*starlark.Builtin)
 	th := &starlark.Thread{} // Background context, like a default starlet Run
-	if _, err := starlark.Call(th, begin, nil, nil); err != nil {
-		t.Fatalf("first begin: %v", err) // holds the sole connection
+	first, err := starlark.Call(th, begin, nil, nil)
+	if err != nil {
+		t.Fatalf("first begin: %v", err)
 	}
+	defer func() {
+		rollback, err := first.(starlark.HasAttrs).Attr("rollback")
+		if err != nil {
+			t.Errorf("rollback attr: %v", err)
+			return
+		}
+		if _, err := starlark.Call(th, rollback.(*starlark.Builtin), nil, nil); err != nil {
+			t.Errorf("rollback first transaction: %v", err)
+		}
+	}()
+	// An abandoned transaction is finalized and releases its connection. Keep
+	// this handle live while the second begin waits, and force a collection so
+	// the assertion does not depend on when the runtime happens to run GC.
+	runtime.GC()
+
 	done := make(chan error, 1)
 	go func() { _, e := starlark.Call(th, begin, nil, nil); done <- e }()
 	select {
 	case e := <-done:
 		if e == nil {
 			t.Error("second begin unexpectedly succeeded on a single-connection DB")
+		} else if !strings.Contains(e.Error(), context.DeadlineExceeded.Error()) {
+			t.Errorf("second begin: %v, want the per-operation deadline", e)
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("second begin blocked >5s — the per-operation timeout was not honored")
 	}
+	runtime.KeepAlive(first)
 }
 
 // raceTestRun uniquifies registered-function names across test invocations (the
