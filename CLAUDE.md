@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`starpkg/sqlite` is an **L4 domain module** of the Star\* ecosystem: it exposes SQLite to Starlark scripts. A script imports the module, opens a connection, and runs queries/DDL/transactions with Go data marshalled to and from Starlark values.
+`starpkg/sqlite` is an **L3 domain module** of the Star\* ecosystem: it exposes SQLite to Starlark scripts. A script imports the module, opens a connection, and runs queries/DDL/transactions with Go data marshalled to and from Starlark values.
 
 It is pure Go — **no cgo, all platforms** — and speaks SQLite two ways through one object surface:
 
 - **Local** databases via `modernc.org/sqlite` (the `"sqlite"` `database/sql` driver) — files or in-memory.
 - **Remote/online** databases via `github.com/tursodatabase/libsql-client-go` (the `"libsql"` driver) — a self-hosted [`sqld`](https://github.com/tursodatabase/libsql) or Turso Cloud. libSQL speaks the SQLite dialect, so a remote connection exposes the **same methods** as a local one.
 
-Layer position: depends downward on `starpkg/base` (the module/config system), `1set/starlet` (the Machine + `go_idiomatic`), and transitively `1set/starlight` + `go.starlark.net`. Nothing in the ecosystem depends on it.
+Layer position: depends downward on `starpkg/base` (the module/config system), `1set/starlet` (the Machine + `go_idiomatic`), and transitively `1set/starlight` + `go.starlark.net`. StarCLI registers this module; it does not depend upward on StarCLI.
 
 ## Dev commands
 
